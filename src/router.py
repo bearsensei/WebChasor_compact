@@ -158,25 +158,38 @@ class Router:
             # Extract signals first
             signals = self._extract_signals(query, has_media)
             
-            # 1) Fast heuristics for high-precision early exits
-            heuristic_result = self._apply_heuristics(query, has_media)
+            # Track which method was used
+            method_used = "unknown"
+            
+            # 1) Only very obvious cases use heuristics (math, multimodal)
+            heuristic_result = self._apply_obvious_heuristics(query, has_media)
             if heuristic_result:
                 label, confidence = heuristic_result
-                logger.info(f"Heuristic match: {label} (confidence: {confidence})")
+                method_used = "heuristic"
+                logger.info(f"Obvious heuristic match: {label} (confidence: {confidence})")
+                print(f"🧭 ROUTER DECISION: {label} (confidence: {confidence:.2f}, method: {method_used})")
                 return RouterResult(label=label, confidence=confidence, signals=signals)
             
-            # 2) Lightweight classifier
-            classifier_result = self._lightweight_classify(query, last_assistant_turn)
-            label, confidence = classifier_result
-            
-            # 3) Low-confidence fallback to LLM
-            if confidence < self.config.llm_confidence_threshold:
-                logger.info(f"Low confidence ({confidence}), using LLM fallback")
+            # 2) Try LLM first for all other cases
+            logger.info("Using LLM classification for non-obvious query")
+            try:
                 llm_label = await self._llm_router(query, last_assistant_turn)
                 label = llm_label
-                confidence = 0.65  # Conservative default for LLM
+                confidence = 0.75  # Higher confidence for LLM
+                method_used = "llm"
+                logger.info(f"LLM classification: {label} (confidence: {confidence})")
+            except Exception as e:
+                logger.warning(f"LLM classification failed: {e}, falling back to lightweight classifier")
+                # 3) Fallback to lightweight classifier only if LLM fails
+                classifier_result = self._lightweight_classify(query, last_assistant_turn)
+                label, confidence = classifier_result
+                method_used = "rule-based"
             
             logger.info(f"Final classification: {label} (confidence: {confidence})")
+            
+            # Simple decision print
+            print(f"🧭 ROUTER DECISION: {label} (confidence: {confidence:.2f}, method: {method_used})")
+            
             return RouterResult(label=label, confidence=confidence, signals=signals)
             
         except Exception as e:
@@ -226,26 +239,32 @@ class Router:
         math_ratio = len(query_chars & math_chars) / len(query_chars)
         return math_ratio > 0.8
     
-    def _apply_heuristics(self, query: str, has_media: bool) -> Optional[Tuple[str, float]]:
-        """Apply fast heuristics for high-precision early exits"""
+    def _apply_obvious_heuristics(self, query: str, has_media: bool) -> Optional[Tuple[str, float]]:
+        """Apply heuristics only for very obvious cases (math, multimodal)"""
         
-        # 1) Media detection
+        # 1) Media detection - very obvious
         if has_media:
             return QueryCategory.MULTIMODAL_QUERY.value, 0.99
         
-        # 2) Math detection
-        if self._looks_like_math(query):
+        # 2) Math detection - very obvious mathematical expressions
+        if self._looks_like_obvious_math(query):
             return QueryCategory.MATH_QUERY.value, 0.98
         
-        # 3) Task/productivity detection
-        if self._asks_for_rewrite_or_format(query):
-            return QueryCategory.TASK_PRODUCTIVITY.value, 0.95
-        
-        # 4) Creative generation detection
-        if self._asks_for_poem_story_roleplay(query):
-            return QueryCategory.CREATIVE_GENERATION.value, 0.95
-        
+        # For all other cases, let LLM decide
         return None
+    
+    def _looks_like_obvious_math(self, query: str) -> bool:
+        """Detect only very obvious mathematical queries"""
+        # Only catch very clear math expressions
+        obvious_math_patterns = [
+            r'^\s*\d+\s*[\+\-\*\/\^]\s*\d+\s*=?\s*$',  # Simple arithmetic like "2+2" or "5*3="
+            r'^\s*\d+\s*[\+\-\*\/\^]\s*\d+\s*[\+\-\*\/\^]\s*\d+\s*=?\s*$',  # Three numbers like "2+3*4"
+            r'^\s*(sin|cos|tan|log|ln|sqrt)\s*\(\s*\d+\s*\)\s*$',  # Simple functions like "sin(30)"
+            r'^\s*\d+\s*\^\s*\d+\s*$',  # Powers like "2^8"
+        ]
+        
+        query_clean = query.strip()
+        return any(re.search(pattern, query_clean, re.IGNORECASE) for pattern in obvious_math_patterns)
     
     def _looks_like_math(self, query: str) -> bool:
         """Detect mathematical queries"""
@@ -291,9 +310,31 @@ class Router:
         
         features = self._extract_features(query, last_assistant_turn)
         
-        # Simple rule-based classification
-        if features['question_words'] > 0 and features['external_indicators'] > 0:
+        # Enhanced rule-based classification with hybrid query detection
+        
+        # Detect hybrid queries (IR + REASONING)
+        hybrid_score = (features['external_indicators'] + features['temporal_indicators'] + 
+                       features['hybrid_indicators'] + features['reasoning_indicators'])
+        
+        # Strong hybrid indicators: needs both fresh data and analysis
+        if (features['external_indicators'] > 0 and features['reasoning_indicators'] > 0 and 
+            (features['temporal_indicators'] > 0 or features['hybrid_indicators'] > 0)):
+            return QueryCategory.INFORMATION_RETRIEVAL.value, 0.85  # Route to IR_RAG for hybrid handling
+        
+        # Alternative hybrid detection: temporal + predictive queries often need data
+        elif (features['temporal_indicators'] > 0 and features['hybrid_indicators'] > 0 and 
+              features['reasoning_indicators'] > 0):
+            return QueryCategory.INFORMATION_RETRIEVAL.value, 0.82  # Likely needs current data for prediction
+        
+        # Pure reasoning patterns (high priority)
+        elif features['reasoning_indicators'] > 0 and features['external_indicators'] == 0:
+            return QueryCategory.KNOWLEDGE_REASONING.value, 0.80
+            
+        # Information retrieval with some analysis
+        elif features['question_words'] > 0 and features['external_indicators'] > 0:
             return QueryCategory.INFORMATION_RETRIEVAL.value, 0.75
+            
+        # Specialized categories
         elif features['math_indicators'] > 0:
             return QueryCategory.MATH_QUERY.value, 0.70
         elif features['task_indicators'] > 0:
@@ -302,6 +343,10 @@ class Router:
             return QueryCategory.CREATIVE_GENERATION.value, 0.60
         elif features['followup_indicators'] > 0:
             return QueryCategory.CONVERSATIONAL_FOLLOWUP.value, 0.55
+            
+        # If has question words but no external indicators, likely pure reasoning
+        elif features['question_words'] > 0:
+            return QueryCategory.KNOWLEDGE_REASONING.value, 0.70
         else:
             return QueryCategory.KNOWLEDGE_REASONING.value, 0.45
     
@@ -311,11 +356,14 @@ class Router:
         
         features = {
             'question_words': len(re.findall(r'\b(what|when|where|who|how|why)\b', query_lower)),
-            'external_indicators': len(re.findall(r'\b(current|latest|search|find|weather|news)\b', query_lower)),
+            'external_indicators': len(re.findall(r'\b(current|latest|search|find|weather|news|recent|trend|data|statistics|report|study|case|pilot|official|policy|industry|market|economic|financial|demographic|population|pandemic|government|regulatory|technology|AI|artificial intelligence|CBDC|digital currency)\b', query_lower)),
             'math_indicators': len(re.findall(r'\b(calculate|solve|math|number|\d+)\b', query_lower)),
             'task_indicators': len(re.findall(r'\b(write|create|format|organize|list)\b', query_lower)),
             'creative_indicators': len(re.findall(r'\b(story|poem|creative|imagine|roleplay)\b', query_lower)),
             'followup_indicators': len(re.findall(r'\b(also|additionally|furthermore|what about)\b', query_lower)),
+            'reasoning_indicators': len(re.findall(r'\b(why|because|reason|cause|effect|factor|explain|analyze|compare|contrast|advantage|disadvantage|benefit|drawback|thrive|collapse|succeed|fail|difference|similar|impact|influence|lead to|result in|reshape|change|handle|effectively)\b', query_lower)),
+            'temporal_indicators': len(re.findall(r'\b(next decade|by 20\d{2}|over the next|in the future|long-term|short-term|recent|trend|emerging|evolving)\b', query_lower)),
+            'hybrid_indicators': len(re.findall(r'\b(might|could|would|may|likely|potential|predict|forecast|project|estimate|assess|evaluate|implications|consequences)\b', query_lower)),
         }
         
         return features
@@ -344,8 +392,13 @@ class Router:
             
             raw_response = response.choices[0].message.content
             
+            # Check if response is valid
+            if not raw_response or not raw_response.strip():
+                logger.warning("LLM router returned empty response")
+                return QueryCategory.INFORMATION_RETRIEVAL.value
+            
             # Extract category from response
-            response_upper = raw_response.upper()
+            response_upper = raw_response.strip().upper()
             for category in QueryCategory:
                 if category.value in response_upper:
                     return category.value

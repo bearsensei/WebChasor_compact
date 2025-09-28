@@ -117,7 +117,7 @@ Your role: act like a project manager. Decompose the user's query into a structu
 ## Guidelines
 1. **Atomic Facts**: each `fact` must be a simple, standalone question answerable from text.  
 2. **Categories**: assign one category to each task. Use the best match.  
-   - biography → info about a person’s life, career, education, achievements.  
+   - biography → info about a person's life, career, education, achievements.  
    - fact_verification → confirm/disprove a claim.  
    - recent_situation → current status, trends, or events.  
    - background → historical, contextual, or foundational info.  
@@ -314,7 +314,7 @@ Classify the user's latest query by intent using recent conversation context.
 - MATH_QUERY
   → Precise calculations/conversions/quant work that do NOT require external facts.
 - KNOWLEDGE_REASONING
-  → Explanations, causal reasoning, frameworks, “why/how” analysis that can be answered without external data or math.
+  → Explanations, causal reasoning, frameworks, "why/how" analysis that can be answered without external data or math.
 - TASK_PRODUCTIVITY
   → Summarize/rewrite/edit; extract/structure; create outlines/tables/checklists; format/convert; draft emails/SOPs; action-ready text.
 - MULTIMODAL_QUERY
@@ -326,7 +326,7 @@ Classify the user's latest query by intent using recent conversation context.
 3) If only numeric computation from given numbers → MATH_QUERY.
 4) If the user requests summarizing/reformatting/extraction/actionable deliverables → TASK_PRODUCTIVITY.
 5) If the user asks for purely creative writing → CREATIVE_GENERATION.
-6) If the user asks for non-factual “why/how” explanation without external data → KNOWLEDGE_REASONING.
+6) If the user asks for non-factual "why/how" explanation without external data → KNOWLEDGE_REASONING.
 7) Otherwise (clarify/continue/acknowledge) → CONVERSATIONAL_FOLLOWUP.
 
 ## EXAMPLES
@@ -374,7 +374,7 @@ User: Compare CRISPR vs base editing and which is safer (cite sources).
 INFORMATION_RETRIEVAL
 ---
 [HISTORY]
-User: That’s helpful.
+User: That's helpful.
 [CURRENT]
 User: Thanks! Also, your explanation made me curious—why do people like time travel plots?
 [CLASSIFICATION]
@@ -394,3 +394,237 @@ CREATIVE_GENERATION
 User: {current_user_query}
 [CLASSIFICATION]
 """
+
+# ============================================================================
+# PRODUCTIVITY TASK PROMPTS
+# ============================================================================
+
+PRODUCTIVITY_SYSTEM_PROMPT = """You are a Productivity Assistant specialized in text transformation tasks. Your role is to help users reformat, summarize, extract, and restructure existing content without adding external information.
+
+## Core Principles:
+1. **No New Facts**: Never add information not present in the source material
+2. **Preserve Accuracy**: Maintain exact numbers, dates, names, and quotes
+3. **Language Consistency**: Match the user's language preference
+4. **Deterministic Output**: Provide consistent, reliable results
+5. **Format Compliance**: Follow specified output formats precisely
+
+## Capabilities:
+- Summarization: Create concise overviews while preserving key information
+- Rewriting: Adjust tone, style, or complexity without changing meaning
+- Extraction: Pull specific data into structured formats (JSON, CSV, lists)
+- Formatting: Convert to bullets, tables, outlines, checklists
+- Translation: Convert between languages while preserving meaning
+- Analysis: Identify patterns and structure in existing content
+
+## Quality Standards:
+- Maintain factual accuracy at all times
+- Use clear, appropriate language for the target audience
+- Ensure logical organization and flow
+- Validate output format requirements
+- Preserve the original intent and context"""
+
+PRODUCTIVITY_SUMMARIZATION_PROMPT = """Create a summary of the following content according to these specifications:
+
+**Guidelines:**
+- Length: {target_length}
+- Style: {style}
+- Preserve all key facts, numbers, and important details
+- Maintain the original meaning and context
+- Use clear, concise language
+- Organize information logically
+- Do not add information not present in the source
+
+**Source Content:**
+{source_content}
+
+**Summary:**"""
+
+PRODUCTIVITY_REWRITING_PROMPT = """Rewrite the following content according to these specifications:
+
+**Target Requirements:**
+- Style: {target_style}
+- Audience: {target_audience}
+- Tone: {tone}
+
+**Guidelines:**
+- Preserve all factual information exactly
+- Do not add new information or external knowledge
+- Maintain the core message and intent
+- Adjust language complexity as needed
+- Keep all numbers, dates, and proper names unchanged
+
+**Original Content:**
+{source_content}
+
+**Rewritten Version:**"""
+
+PRODUCTIVITY_EXTRACTION_PROMPT = """Extract the following information from the content and format as requested:
+
+**Extraction Requirements:**
+- Target Data: {extract_targets}
+- Output Format: {output_format}
+- Include only information explicitly mentioned in the source
+- Mark missing information as "N/A"
+- Preserve exact numbers, dates, and names
+- Use structured format for easy processing
+
+**Source Content:**
+{source_content}
+
+**Extracted Data:**"""
+
+PRODUCTIVITY_FORMATTING_PROMPT = """Reformat the following content into the requested structure:
+
+**Format Requirements:**
+- Target Format: {target_format}
+- Preserve all information from the source
+- Organize logically and clearly
+- Use appropriate formatting markers
+- Maintain hierarchical relationships where applicable
+
+**Source Content:**
+{source_content}
+
+**Formatted Output:**"""
+
+PRODUCTIVITY_TRANSLATION_PROMPT = """Translate the following content to {target_language}:
+
+**Translation Guidelines:**
+- Preserve all factual information exactly
+- Maintain the original tone and style
+- Keep technical terms accurate
+- Preserve numbers, dates, and proper names
+- Provide natural, fluent translation
+- Do not add explanatory notes or external context
+
+**Source Content:**
+{source_content}
+
+**Translation:**"""
+
+PRODUCTIVITY_ANALYSIS_PROMPT = """Analyze the following content according to these specifications:
+
+**Analysis Focus:** {analysis_focus}
+
+**Guidelines:**
+- Identify key patterns, structures, or elements
+- Provide insights based only on the given content
+- Use clear, analytical language
+- Support observations with evidence from the text
+- Do not make assumptions beyond what's presented
+- Organize findings logically
+
+**Content to Analyze:**
+{source_content}
+
+**Analysis:**"""
+
+PRODUCTIVITY_OUTLINE_PROMPT = """Create a detailed outline of the following content:
+
+**Outline Requirements:**
+- Use hierarchical structure (I, A, 1, a, etc.)
+- Capture all main points and supporting details
+- Organize logically and coherently
+- Preserve the original flow of ideas
+- Include key facts and examples where relevant
+- Maintain proper nesting levels
+
+**Content to Outline:**
+{source_content}
+
+**Outline:**"""
+
+PRODUCTIVITY_CHECKLIST_PROMPT = """Convert the following content into a practical checklist:
+
+**Checklist Requirements:**
+- Create specific, actionable items
+- Use clear, imperative language (action verbs)
+- Organize in logical sequence
+- Include all necessary steps or items
+- Make items measurable where possible
+- Use checkbox format for easy tracking
+
+**Content to Convert:**
+{source_content}
+
+**Checklist:**"""
+
+# ============================================================================
+# PRODUCTIVITY VALIDATION TEMPLATES
+# ============================================================================
+
+PRODUCTIVITY_VALIDATION_RULES = {
+    "summarize": [
+        "Summary is shorter than original content",
+        "All key facts are preserved",
+        "No new information added",
+        "Maintains original meaning",
+        "Uses clear, concise language"
+    ],
+    "rewrite": [
+        "Core meaning unchanged",
+        "Style adjusted to requirements", 
+        "No new facts introduced",
+        "Appropriate for target audience",
+        "Maintains factual accuracy"
+    ],
+    "extract": [
+        "Only source information included",
+        "Proper structured format used",
+        "Exact preservation of data",
+        "Missing items marked as N/A",
+        "Format matches requirements"
+    ],
+    "format": [
+        "All information preserved",
+        "Proper formatting applied",
+        "Logical organization maintained",
+        "Appropriate structure markers used",
+        "Easy to read and process"
+    ],
+    "translate": [
+        "Accurate translation provided",
+        "Original meaning preserved",
+        "Natural fluency achieved",
+        "Technical terms handled correctly",
+        "Cultural context maintained"
+    ],
+    "analyze": [
+        "Evidence-based observations",
+        "Clear analytical insights",
+        "No external assumptions made",
+        "Logical structure followed",
+        "Supported by text evidence"
+    ],
+    "outline": [
+        "Hierarchical structure used",
+        "Complete coverage achieved",
+        "Logical flow maintained",
+        "Proper nesting applied",
+        "Key details included"
+    ],
+    "checklist": [
+        "Actionable items created",
+        "Clear imperative language used",
+        "Complete coverage ensured",
+        "Logical sequence followed",
+        "Measurable where possible"
+    ]
+}
+
+# ============================================================================
+# PRODUCTIVITY ERROR MESSAGES
+# ============================================================================
+
+PRODUCTIVITY_ERROR_MESSAGES = {
+    "empty_content": "No content provided to process. Please include the text you'd like me to work with.",
+    "invalid_format": "The requested output format is not supported. Please specify a valid format.",
+    "missing_parameters": "Required parameters are missing. Please provide complete task specifications.",
+    "content_too_short": "The provided content is too short to process effectively.",
+    "unsupported_language": "The requested target language is not currently supported.",
+    "validation_failed": "Output validation failed. The result may not meet quality standards.",
+    "processing_error": "An error occurred during processing. Please try rephrasing your request."
+}
+
+
+

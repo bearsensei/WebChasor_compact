@@ -12,7 +12,7 @@ import asyncio
 import logging
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass
-from artifacts import ActionRegistry, Context, Artifact, Report
+from artifacts import ActionRegistry, Context, Artifact
 
 # Setup logging
 logger = logging.getLogger(__name__)
@@ -72,7 +72,8 @@ class ChasorCore:
             logger.info(f"Starting execution for query: {user_query[:100]}...")
             
             # Route the query to appropriate category
-            category = await self.router.classify(history, user_query)
+            category_enum = await self.router.classify(history, user_query)
+            category = category_enum.value  # Convert enum to string
             logger.info(f"Query classified as: {category}")
             
             # Initialize context and get action
@@ -105,30 +106,35 @@ class ChasorCore:
                         if hasattr(artifact.meta, "extracted"):
                             state.extracted = artifact.meta.extracted
                     
-                    # Evaluate the artifact
-                    report = await self.evaluator.evaluate(
-                        category, 
-                        state.plan,
-                        artifact, 
-                        state.extracted
-                    )
-                    
-                    logger.info(f"Round {state.rounds + 1} evaluation: {'PASSED' if report.passed else 'FAILED'}")
-                    
-                    # Check if we're done
-                    if report.passed:
-                        logger.info("Execution completed successfully")
+                    # Evaluate the artifact if evaluator is available
+                    if self.evaluator:
+                        report = await self.evaluator.evaluate(
+                            category, 
+                            state.plan,
+                            artifact, 
+                            state.extracted
+                        )
+                        
+                        logger.info(f"Round {state.rounds + 1} evaluation: {'PASSED' if report.passed else 'FAILED'}")
+                        
+                        # Check if we're done
+                        if report.passed:
+                            logger.info("Execution completed successfully")
+                            return artifact
+                        
+                        # Prepare for next round with remediation hints
+                        if state.rounds < self.max_rounds - 1:
+                            ctx.hints = self._merge_hints(ctx.hints, {
+                                "remediation": report.suggestions,
+                                "round": state.rounds + 1,
+                                "previous_artifacts": state.artifacts,
+                                "execution_state": state
+                            })
+                            logger.info(f"Preparing round {state.rounds + 2} with remediation hints")
+                    else:
+                        # No evaluator available, assume success after first round
+                        logger.info(f"Round {state.rounds + 1}: No evaluator available, assuming success")
                         return artifact
-                    
-                    # Prepare for next round with remediation hints
-                    if state.rounds < self.max_rounds - 1:
-                        ctx.hints = self._merge_hints(ctx.hints, {
-                            "remediation": report.suggestions,
-                            "round": state.rounds + 1,
-                            "previous_artifacts": state.artifacts,
-                            "execution_state": state
-                        })
-                        logger.info(f"Preparing round {state.rounds + 2} with remediation hints")
                     
                     state.rounds += 1
                     

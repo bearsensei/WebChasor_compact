@@ -1,6 +1,7 @@
 # artifacts.py
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, List
+from toolsets import Toolset
 
 @dataclass
 class Artifact:
@@ -35,12 +36,34 @@ class ActionRegistry:
     def route(self, router_category: str) -> str:
         # mapping is configurable; can live in YAML
         mapping = {
-            "INFORMATION_RETRIEVAL": "IR_RAG",
+            "INFORMATION_RETRIEVAL": "IR_RAG",     # Future: Information Retrieval with RAG
             "TASK_PRODUCTIVITY": "PRODUCTIVITY",
             "KNOWLEDGE_REASONING": "REASONING",
-            "CREATIVE_GENERATION": "CREATIVE",
-            "MATH_QUERY": "MATH",
-            "MULTIMODAL_QUERY": "MULTIMODAL",
-            "CONVERSATIONAL_FOLLOWUP": "RESPONSE"
+            "CREATIVE_GENERATION": "CREATIVE",     # Future: Creative content generation
+            "MATH_QUERY": "MATH",                  # Future: Mathematical computation
+            "MULTIMODAL_QUERY": "MULTIMODAL",      # Future: Image/video processing
+            "CONVERSATIONAL_FOLLOWUP": "RESPONSE"  # Future: Conversational responses
         }
-        return mapping.get(router_category, "REASONING")
+        
+        action_name = mapping.get(router_category, "REASONING")
+        
+        # Check if the action is available in registry, fallback to available ones
+        if action_name not in self._reg:
+            # Future actions not yet implemented, use available fallbacks
+            fallback_mapping = {
+                "IR_RAG": "REASONING",           # Information retrieval → reasoning
+                "CREATIVE": "REASONING",         # Creative tasks → reasoning  
+                "MATH": "REASONING",             # Math queries → reasoning
+                "MULTIMODAL": "REASONING",       # Multimodal → reasoning
+                "RESPONSE": "REASONING"          # Responses → reasoning
+            }
+            original_action = action_name
+            action_name = fallback_mapping.get(action_name, "REASONING")
+            
+            # Simple decision print
+            print(f"📋 REGISTRY DECISION: {router_category} → {original_action} → {action_name} (fallback)")
+        else:
+            # Simple decision print
+            print(f"📋 REGISTRY DECISION: {router_category} → {action_name} (direct)")
+        
+        return action_name
