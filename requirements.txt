@@ -1,0 +1,10 @@
+# Core dependencies
+openai>=1.0.0
+python-dotenv>=1.0.0
+requests>=2.25.0
+
+# Optional dependencies for enhanced functionality
+# Uncomment as needed:
+# scikit-learn>=1.0.0  # For lightweight classifier
+# numpy>=1.21.0        # For numerical operations
+# pandas>=1.3.0        # For data manipulation

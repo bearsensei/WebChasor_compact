@@ -3,7 +3,7 @@ import os
 from dotenv import load_dotenv
 from prompt import PLANNER_PROMPT, USER_PROMPT, SYSTEM_PROMPT_MULTI
 load_dotenv()
-
+import time
 # get env
 
 OPENAI_API_BASE = os.getenv("OPENAI_API_BASE")
@@ -20,8 +20,9 @@ client = openai.OpenAI(api_key=OPENAI_API_KEY_AGENT, base_url=OPENAI_API_BASE)
 
 # init planner
 
-USER_INPUT = "How many years passed between the start of World War I and the moon landing?"
+USER_INPUT = "如何评价今年香港施政报告？"
 
+time_start = time.time()
 response = client.chat.completions.create(
     model=OPENAI_API_MODEL_AGENT_PLANNER,
     messages=[
@@ -29,5 +30,6 @@ response = client.chat.completions.create(
         {"role": "user", "content":  "User: " + USER_INPUT}
     ]
 )
-
+time_end = time.time()  
 print(response.choices[0].message.content)
+print(f"Time taken: {time_end - time_start} seconds")
