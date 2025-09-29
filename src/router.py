@@ -94,9 +94,9 @@ class Router:
         cfg = get_config()
         
         # Get from config file first, then fallback to environment
-        api_base = cfg.get('external_services.openai.api_base') or os.getenv("OPENAI_API_BASE")
+        api_base = cfg.get('external_services.openai.api_base') 
         api_key = os.getenv("OPENAI_API_KEY_AGENT")  # Keep sensitive data in env
-        model = cfg.get('models.router.model_name', 'gpt-4')
+        model = cfg.get('models.router.model_name')
         
         if not all([api_base, api_key]):
             missing = [k for k, v in {

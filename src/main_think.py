@@ -17,6 +17,61 @@ from chasor import ChasorCore
 from toolsets import Toolset
 from config_manager import get_config
 from streaming import stream_response, is_streaming_enabled, get_streaming_format, streaming_output
+from utils.thinking_coordinator import coordinate_unified_response
+
+async def execute_single_query(query: str, router, registry, toolset):
+    """执行单个查询的主要逻辑"""
+    try:
+        # 先路由查询以确定action类型，但只调用一次
+        category_enum = await router.classify("", query)
+        category = category_enum.value
+        print(f"[DEMO][ROUTE] {category}")
+        
+        # 获取action名称
+        action_name = registry.route(category)
+        print(f"[DEMO][ACTION] {action_name}")
+        
+        # 根据配置和action类型决定执行方式
+        if action_name == "REASONING" and is_streaming_enabled():
+            # 流式输出模式 - 直接调用streaming模块
+            print("[DEMO][RESULT] ", end="", flush=True)
+            full_content = await stream_response(query)
+            if full_content and not get_streaming_format() == "openai":
+                print(f"\n[DEMO][FULL_CONTENT] Generated {len(full_content)} characters")
+            return full_content
+        else:
+            # 常规模式 - 直接调用action，避免ChasorCore的重复路由
+            action = registry.get(action_name)
+            if action:
+                # 创建Context对象
+                ctx = Context(
+                    history="", 
+                    query=query, 
+                    router_category=category, 
+                    hints={}
+                )
+                # 直接调用action
+                result = await action.run(ctx, toolset)
+                print(f"[DEMO][RESULT] {result.content}")
+                
+                # 显示元数据
+                if result.meta:
+                    print(f"[DEMO][META] fields={len(result.meta)}")
+                    if 'search_results_count' in result.meta:
+                        print(f"[DEMO][SEARCH] results={result.meta['search_results_count']}")
+                    if 'extraction_confidence' in result.meta:
+                        print(f"[DEMO][CONFIDENCE] {result.meta['extraction_confidence']:.2f}")
+                
+                return result.content
+            else:
+                print(f"[DEMO][ERROR] Action not found: {action_name}")
+                return None
+        
+    except Exception as e:
+        print(f"[DEMO][ERROR] {e}")
+        import traceback
+        traceback.print_exc()
+        return None
 
 async def run_demo():
     # Load and display configuration
@@ -65,20 +120,12 @@ async def run_demo():
         "INFORMATION_RETRIEVAL": ir_rag_action,  # Map router category to action
     }
     
-    # Initialize ChasorCore with correct parameters
-    core = ChasorCore(
-        router=router, 
-        registry=registry, 
-        toolset=toolset,
-        evaluator=None  # Add evaluator parameter if needed
-    )
-    
     # Demo queries - mix of different types
     queries = [
         "解释一下为什么会有潮汐？",  # Test query
     ]
     
-    print("[DEMO][START] WebChasor Demo")
+    print("[DEMO][START] WebChasor Demo with Thinking Process")
     print(f"[DEMO][MODEL] synthesizer={synthesizer.model_name}")
     
     # 显示流式输出配置
@@ -89,52 +136,12 @@ async def run_demo():
         print(f"\n[DEMO][QUERY_{i}] {query}")
         print("-" * 50)
         
-        try:
-            # 先路由查询以确定action类型，但只调用一次
-            category_enum = await router.classify("", query)
-            category = category_enum.value
-            print(f"[DEMO][ROUTE] {category}")
-            
-            # 获取action名称
-            action_name = registry.route(category)
-            print(f"[DEMO][ACTION] {action_name}")
-            
-            # 根据配置和action类型决定执行方式
-            if action_name == "REASONING" and is_streaming_enabled():
-                # 流式输出模式 - 直接调用streaming模块
-                print("[DEMO][RESULT] ", end="", flush=True)
-                full_content = await stream_response(query)
-                if full_content and not get_streaming_format() == "openai":
-                    print(f"\n[DEMO][FULL_CONTENT] Generated {len(full_content)} characters")
-            else:
-                # 常规模式 - 直接调用action，避免ChasorCore的重复路由
-                action = registry.get(action_name)
-                if action:
-                    # 创建Context对象
-                    ctx = Context(
-                        history="", 
-                        query=query, 
-                        router_category=category, 
-                        hints={}
-                    )
-                    # 直接调用action
-                    result = await action.run(ctx, toolset)
-                    print(f"[DEMO][RESULT] {result.content}")
-                    
-                    # 显示元数据
-                    if result.meta:
-                        print(f"[DEMO][META] fields={len(result.meta)}")
-                        if 'search_results_count' in result.meta:
-                            print(f"[DEMO][SEARCH] results={result.meta['search_results_count']}")
-                        if 'extraction_confidence' in result.meta:
-                            print(f"[DEMO][CONFIDENCE] {result.meta['extraction_confidence']:.2f}")
-                else:
-                    print(f"[DEMO][ERROR] Action not found: {action_name}")
-            
-        except Exception as e:
-            print(f"[DEMO][ERROR] {e}")
-            import traceback
-            traceback.print_exc()
+        # 使用统一的流式响应
+        await coordinate_unified_response(
+            query, 
+            execute_single_query, 
+            query, router, registry, toolset
+        )
         
         print("=" * 60)
 
