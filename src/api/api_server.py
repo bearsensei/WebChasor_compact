@@ -11,7 +11,11 @@ from typing import Optional, List, Dict, Any
 import json
 import time
 import uuid
+from dotenv import load_dotenv
 
+
+# Load environment variables from .env file
+load_dotenv()
 # Add the project root to Python path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 

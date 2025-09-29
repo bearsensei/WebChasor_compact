@@ -1,71 +1,127 @@
-# WebChasor Compact
+# WebChasor
 
-A compact implementation of the WebChasor system - an AI-powered information extraction, calculation, synthesis, retrieval, and reorganization system.
+A comprehensive AI-powered information processing system that combines intelligent routing, information retrieval, reasoning, and productivity tools. WebChasor provides structured, reliable responses through a hybrid approach that leverages multiple AI models and external data sources.
 
 ## Architecture
 
-WebChasor uses a hybrid routing approach with multiple processing components:
+WebChasor uses a modular architecture with specialized action components:
 
-- **Router**: Classifies queries using fast heuristics, lightweight classification, and LLM fallback
-- **Planner**: Creates execution plans for complex information retrieval tasks  
-- **Extractor**: Extracts specific information from text and search results
-- **Calculator**: Performs mathematical calculations
-- **Synthesizer**: Combines and synthesizes information from multiple sources
-- **InfoRetriever**: Retrieves information from search engines and databases
-- **InfoReorganizer**: Reorganizes retrieved information into structured formats
+- **Router**: Intelligent query classification using heuristics, lightweight classification, and LLM fallback
+- **IR_RAG**: Information Retrieval and Retrieval-Augmented Generation for factual queries requiring external data
+- **Reasoning**: Structured reasoning engine for analytical queries without external information needs
+- **Productivity**: Text transformation tools for summarization, extraction, formatting, and analysis
+- **Synthesizer**: Combines and synthesizes information from multiple sources into coherent responses
+- **Config Manager**: Centralized configuration management with YAML-based settings
+
+## Key Features
+
+- **OpenAI API Compatible**: Full compatibility with OpenAI API format for easy integration
+- **Streaming Support**: Real-time streaming responses with thinking process visualization
+- **Multi-Model Support**: Configurable AI models for different components
+- **External Data Integration**: SerpAPI and Google Search integration for real-time information
+- **Structured Reasoning**: Scaffolded reasoning approaches for consistent, logical responses
+- **Productivity Tools**: Built-in text processing and transformation capabilities
 
 ## Setup
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/bearsensei/WebChasor_compact.git
-cd WebChasor_compact
+git clone <repository-url>
+cd webchasor
 ```
 
-2. Install dependencies:
+2. Create and activate conda environment:
+```bash
+conda create -n webchaser python=3.9
+conda activate webchaser
+```
+
+3. Install dependencies:
 ```bash
 pip install -r requirements.txt
 ```
 
-3. Configure environment variables:
+4. Configure environment variables:
 ```bash
-cp .env.example .env
-# Edit .env with your API keys
+export OPENAI_API_KEY_AGENT="your-openai-api-key"
+export SERPAPI_KEY="your-serpapi-key"  # Optional
 ```
 
-4. Run the system:
+5. Run the API server:
 ```bash
-python src/chasor.py
+python src/api/api_server.py
 ```
 
 ## Configuration
 
-Copy `.env.example` to `.env` and configure the following:
+The system uses `config/config.yaml` for comprehensive configuration. Key settings include:
 
-- `OPENAI_API_KEY_AGENT`: Your OpenAI API key
-- `SERPAPI_KEY`: Your SerpAPI key (optional)
-- `GOOGLE_SEARCH_KEY`: Google Custom Search API key (optional)
+- **Models**: Configure different AI models for each component (router, synthesizer, reasoning, etc.)
+- **External Services**: API endpoints and rate limits for OpenAI, SerpAPI, Google Search
+- **IR_RAG Settings**: Content processing, extraction, ranking, and search configuration
+- **Productivity Tools**: Task-specific settings for summarization, translation, analysis
+- **Performance**: Caching, concurrency, and timeout configurations
+
+## API Usage
+
+### OpenAI Compatible Endpoints
+
+- `POST /v1/chat/completions` - Main chat completion endpoint
+- `GET /v1/models` - List available models
+- `GET /health` - Health check
+
+### Example Usage
+
+```bash
+curl -X POST "http://localhost:8000/v1/chat/completions" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "webchasor-thinking",
+    "messages": [{"role": "user", "content": "What are the latest developments in AI?"}],
+    "stream": true
+  }'
+```
 
 ## Components
 
-### Router
-The router classifies user queries into categories:
+### Action Types
+
+- **IR_RAG**: Handles factual queries requiring external information retrieval
+- **REASONING**: Manages analytical queries using structured reasoning scaffolds
+- **PRODUCTIVITY**: Provides text transformation and analysis tools
+
+### Query Categories
+
+The router classifies queries into:
 - INFORMATION_RETRIEVAL
-- MATH_QUERY  
+- KNOWLEDGE_REASONING  
 - TASK_PRODUCTIVITY
-- KNOWLEDGE_REASONING
 - CONVERSATIONAL_FOLLOWUP
 - CREATIVE_GENERATION
 - MULTIMODAL_QUERY
 
 ### Flow
-See `flowchart.md` for the complete system flow diagram.
+
+See `flowchart.md` for the complete system flow diagram with detailed sequence diagrams.
+
+## Development
+
+### Running Tests
+```bash
+python -m pytest tests/
+```
+
+### Code Quality
+```bash
+make ci  # Run all checks including linting and tests
+```
 
 ## Security
 
 - All API keys are stored in environment variables
 - No sensitive information is committed to the repository
-- Use `.env.example` as a template for configuration
+- Configurable rate limiting and timeout settings
+- Safe search filtering for external queries
 
 ## License
 

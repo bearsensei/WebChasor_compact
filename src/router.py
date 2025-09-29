@@ -402,7 +402,7 @@ class Router:
             # Check if response is valid
             if not raw_response or not raw_response.strip():
                 logger.warning("LLM router returned empty response")
-                return QueryCategory.INFORMATION_RETRIEVAL.value
+                return QueryCategory.CONVERSATIONAL_FOLLOWUP.value  # 改为 CONVERSATIONAL_FOLLOWUP
             
             # Extract category from response
             response_upper = raw_response.strip().upper()
@@ -410,13 +410,13 @@ class Router:
                 if category.value in response_upper:
                     return category.value
             
-            # Fallback to information retrieval
+            # Fallback to conversational followup for unclear responses
             logger.warning(f"LLM router couldn't parse response: {raw_response}")
-            return QueryCategory.INFORMATION_RETRIEVAL.value
+            return QueryCategory.CONVERSATIONAL_FOLLOWUP.value  # 改为 CONVERSATIONAL_FOLLOWUP
             
         except Exception as e:
             logger.error(f"LLM router failed: {e}")
-            return QueryCategory.INFORMATION_RETRIEVAL.value
+            return QueryCategory.CONVERSATIONAL_FOLLOWUP.value  # 改为 CONVERSATIONAL_FOLLOWUP
     
     async def health_check(self) -> Dict[str, Any]:
         """Perform health check on the router"""
