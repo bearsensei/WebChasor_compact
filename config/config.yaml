@@ -2,6 +2,12 @@
 # This file contains all configuration settings for the WebChasor system
 # Each section controls different aspects of the system's behavior
 
+# Demo and output configuration
+demo:
+  streaming:
+    enabled: false  # Enable/disable streaming output (OpenAI SSE format)
+    format: "openai"  # Output format: "openai" for SSE, "simple" for plain text
+
 # External service configurations
 external_services:
   openai:
@@ -111,7 +117,7 @@ models:
   router:
     fallback_enabled: true       # Enable fallback mechanisms
     max_tokens: 500             # Maximum tokens for routing decisions
-    model_name: gpt-oss-20b   # Model name for routing
+    model_name: gpt-oss-120b   # Model name for routing
     provider: openai            # Model provider
     temperature: 0.1            # Low temperature for consistent routing
   

@@ -1,0 +1,90 @@
+# thinking_plan.py
+"""
+Simple fake thinking process generator
+Generates detailed thinking process with <think></think> tags, supports OpenAI format streaming output
+"""
+import os
+import sys
+
+# Add src directory to path to find config_manager
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from config_manager import get_config
+
+class ThinkingPlan:
+    """Generate fake thinking process"""
+    
+    def __init__(self):
+        self.cfg = get_config()
+    
+    async def generate_thinking_stream(self, query: str):
+        """
+        Generate thinking process streaming output (OpenAI SSE format)
+        
+        Args:
+            query: User query
+        """
+        api_base = self.cfg.get('external_services.openai.api_base', 'https://api.openai.com/v1')
+        api_key = os.getenv("OPENAI_API_KEY_AGENT")
+        model = self.cfg.get('models.synthesizer.model_name', 'gpt-4')
+        
+        if not api_key:
+            print("Error: No API key found")
+            return
+        
+        # Build thinking prompt
+        thinking_prompt = f""" First, you are a helpful assistant. You need to check if the question need a thinking process. If it does, please generate a detailed thinking process for the following question. If it does not, please just finished the generation and output "no thinking process needed".
+        Please generate a detailed thinking process for the following question. Requirements:
+1. Analyze key elements of the problem
+2. Think through steps to solve the problem. BUT do not include the answer, just raise the questions.
+3. List all possible angles and approaches
+4. Use natural language and clear logic
+5. Do not include <think></think> tags, I will add them automatically
+
+Question: {query}
+
+Please generate a detailed thinking process:"""
+        
+        try:
+            import openai
+            client = openai.OpenAI(api_key=api_key, base_url=api_base)
+            
+            # Output opening tag first
+            print("data: " + '{"choices":[{"delta":{"content":"<think>\\n"}}]}' + "\n\n", flush=True)
+            
+            # Create streaming request
+            stream = client.chat.completions.create(
+                model=model,
+                messages=[{
+                    "role": "system", 
+                    "content": "You are an AI assistant good at thinking. Please generate detailed, natural thinking processes to help analyze and solve problems."
+                }, {
+                    "role": "user", 
+                    "content": thinking_prompt
+                }],
+                temperature=0.3,
+                max_tokens=1000,
+                stream=True
+            )
+            
+            # Process streaming response
+            for chunk in stream:
+                if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content is not None:
+                    # Output original chunk JSON format
+                    print(f"data: {chunk.model_dump_json()}\n\n", flush=True)
+            
+            # Output closing tag
+            print("data: " + '{"choices":[{"delta":{"content":"\\n</think>\\n\\n"}}]}' + "\n\n", flush=True)
+            
+            # Send stream end signal
+            print("data: [DONE]\n\n", flush=True)
+            
+        except Exception as e:
+            print(f"Thinking generation error: {e}")
+
+
+# Convenience function
+async def generate_fake_thinking(query: str):
+    """Convenient fake thinking generation function"""
+    thinking = ThinkingPlan()
+    await thinking.generate_thinking_stream(query)
