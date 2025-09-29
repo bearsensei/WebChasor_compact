@@ -1,0 +1,307 @@
+# WebChasor Configuration File
+# This file contains all configuration settings for the WebChasor system
+# Each section controls different aspects of the system's behavior
+
+# External service configurations
+external_services:
+  openai:
+    rate_limit: 3500  # Requests per minute for OpenAI API
+    retry_delay: 1    # Delay in seconds between retries
+  serpapi:
+    rate_limit: 100   # Requests per minute for SerpAPI
+    retry_delay: 1    # Delay in seconds between retries
+  vector_db:
+    connection_pool_size: 10  # Maximum number of database connections
+
+# Information Retrieval and RAG (Retrieval-Augmented Generation) settings
+ir_rag:
+  # Content processing configuration
+  content:
+    chunk_overlap: 50           # Overlap between text chunks in characters
+    chunk_size: 500             # Size of text chunks in characters
+    max_passages_per_task: 3    # Maximum passages to retrieve per task
+    min_passage_length: 20      # Minimum length for valid passages
+  
+  # Information extraction settings
+  extraction:
+    confidence_threshold: 0.7      # Minimum confidence score for extractions
+    enable_ner_fallback: true     # Enable Named Entity Recognition fallback
+    enable_regex_fallback: true   # Enable regex pattern fallback
+    max_extraction_attempts: 3    # Maximum attempts for extraction
+  
+  # Content ranking algorithm settings
+  ranking:
+    algorithm: keyword_matching           # Ranking algorithm type
+    entity_weight: 2.0                   # Weight for entity matches
+    keyword_weight: 1.0                  # Weight for keyword matches
+    length_penalty_threshold: 20         # Threshold for length penalty
+    question_word_weight: 0.5           # Weight for question words
+    structure_bonus: 0.2                # Bonus for structured content
+  
+  # Search engine configuration
+  search:
+    engine: google           # Search engine to use
+    language: zh-cn         # Search language (Chinese Simplified)
+    location: Hong Kong     # Geographic location for search
+    max_results: 10        # Maximum search results to return
+    provider: serpapi       # Search API provider
+    safe_search: true      # Enable safe search filtering
+  
+  # Vector database settings
+  vector_db:
+    enabled: false                    # Enable vector database functionality
+    hybrid_weight: 0.5               # Weight for hybrid search
+    provider: faiss                  # Vector database provider
+    similarity_threshold: 0.8        # Minimum similarity threshold
+    top_k: 10                        # Number of top results to return
+  
+  # Web scraping configuration
+  web_scraping:
+    enabled: true                    # Enable web scraping functionality
+    max_pages: 5                    # Maximum pages to scrape per request
+    parallel_fetch: true            # Enable parallel page fetching
+    retry_attempts: 2               # Number of retry attempts
+    timeout: 10                     # Timeout in seconds
+    user_agent: Mozilla/5.0 (compatible; WebChasor/1.0)  # User agent string
+
+# Logging configuration
+logging:
+  # Decision logging settings for different components
+  decisions:
+    enabled: true        # Enable decision logging globally
+    ir_rag: true        # Log IR_RAG decisions
+    productivity: true  # Log productivity decisions
+    reasoning: true     # Log reasoning decisions
+    registry: true      # Log registry decisions
+    router: true        # Log router decisions
+    synthesizer: true   # Log synthesizer decisions
+  
+  # File logging settings
+  file:
+    backup_count: 5              # Number of backup log files
+    enabled: false               # Enable file logging
+    max_size: 10MB              # Maximum log file size
+    path: logs/webchasor.log    # Log file path
+  
+  format: '%(asctime)s - %(name)s - %(levelname)s - %(message)s'  # Log format
+  level: INFO  # Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+
+# AI Model configurations for different components
+models:
+  # Information extraction model
+  extractor:
+    fallback_enabled: true       # Enable fallback mechanisms
+    max_tokens: 2000            # Maximum tokens for extraction
+    model_name: gpt-oss-120b   # Model name for extraction
+    provider: openai            # Model provider
+    temperature: 0.0            # Temperature for deterministic output
+  
+  # Task planning model
+  planner:
+    fallback_enabled: true       # Enable fallback mechanisms
+    max_tokens: 1500            # Maximum tokens for planning
+    model_name: gpt-oss-120b           # Model name for planning
+    provider: openai            # Model provider
+    temperature: 0.1            # Low temperature for consistent planning
+  
+  # Request routing model
+  router:
+    fallback_enabled: true       # Enable fallback mechanisms
+    max_tokens: 500             # Maximum tokens for routing decisions
+    model_name: gpt-oss-120b           # Model name for routing
+    provider: openai            # Model provider
+    temperature: 0.1            # Low temperature for consistent routing
+  
+  # Response synthesis model
+  synthesizer:
+    fallback_enabled: true       # Enable fallback mechanisms
+    max_tokens: 20000            # Maximum tokens for synthesis
+    model_name: gpt-oss-120b           # Model name for synthesis
+    provider: openai            # Model provider
+    temperature: 0.1            # Low temperature for consistent synthesis
+
+# Performance and optimization settings
+performance:
+  # Caching configuration
+  cache:
+    enabled: false    # Enable response caching
+    max_size: 1000   # Maximum cache entries
+    ttl: 3600        # Time-to-live in seconds (1 hour)
+  
+  # Concurrency settings
+  concurrency:
+    max_parallel_requests: 5      # Maximum parallel API requests
+    max_parallel_web_fetches: 3   # Maximum parallel web fetches
+  
+  # Timeout settings (in seconds)
+  timeouts:
+    action_execution: 120  # Timeout for action execution
+    llm_request: 30       # Timeout for LLM requests
+    web_request: 10       # Timeout for web requests
+  
+  # Token limits
+  tokens:
+    max_input: 8000   # Maximum input tokens
+    max_output: 2000  # Maximum output tokens
+
+# Productivity tools configuration
+productivity:
+  # Classification settings
+  classification:
+    confidence_threshold: 0.7  # Minimum confidence for classification
+    fallback_to_rules: true    # Enable rule-based fallback
+    use_llm: true             # Use LLM for classification
+  
+  # Output formatting
+  output:
+    auto_detect_kind: true      # Auto-detect content type
+    include_metadata: true      # Include metadata in output
+    include_statistics: true    # Include processing statistics
+  
+  # Available productivity tasks
+  tasks:
+    # Content analysis task
+    analyze:
+      enabled: true         # Enable analysis functionality
+      max_insights: 5      # Maximum insights to generate
+    
+    # Information extraction task
+    extract:
+      enabled: true         # Enable extraction functionality
+      supported_types:      # Types of information to extract
+      - dates
+      - names
+      - numbers
+      - emails
+      - urls
+    
+    # Content formatting task
+    format:
+      enabled: true         # Enable formatting functionality
+      supported_formats:    # Supported output formats
+      - json
+      - csv
+      - markdown
+      - html
+    
+    # Content rewriting task
+    rewrite:
+      default_tone: neutral  # Default writing tone
+      enabled: true         # Enable rewriting functionality
+      preserve_facts: true  # Preserve factual information
+    
+    # Content summarization task
+    summarize:
+      default_length: moderate    # Default summary length
+      enabled: true              # Enable summarization functionality
+      max_bullet_points: 10      # Maximum bullet points in summary
+    
+    # Translation task
+    translate:
+      enabled: true         # Enable translation functionality
+      supported_languages:  # Supported language codes
+      - en    # English
+      - zh-cn # Chinese Simplified
+      - zh-tw # Chinese Traditional
+      - ja    # Japanese
+      - ko    # Korean
+
+# Reasoning engine configuration
+reasoning:
+  # Classification settings
+  classification:
+    confidence_threshold: 0.6  # Minimum confidence for reasoning classification
+    fallback_to_rules: true    # Enable rule-based fallback
+    use_model: false          # Use ML model for classification
+  
+  # Output configuration
+  output:
+    include_confidence: true        # Include confidence scores
+    include_reasoning_chain: true   # Include reasoning steps
+    max_length: 2000               # Maximum output length
+  
+  # Reasoning scaffolds (structured reasoning templates)
+  scaffolds:
+    # Analytical reasoning
+    analytical:
+      enabled: true                    # Enable analytical reasoning
+      max_steps: 5                    # Maximum reasoning steps
+      template: step_by_step_analysis # Template type
+    
+    # Comparative reasoning
+    comparative:
+      enabled: true              # Enable comparative reasoning
+      max_comparisons: 5         # Maximum comparisons
+      template: comparison_table # Template type
+    
+    # Explanatory reasoning
+    explanatory:
+      enabled: true                    # Enable explanatory reasoning
+      max_factors: 3                   # Maximum factors to consider
+      template: cause_effect_explanation # Template type
+    
+    # Predictive reasoning
+    predictive:
+      enabled: true              # Enable predictive reasoning
+      template: trend_analysis   # Template type
+      time_horizon: 2-5 years    # Prediction time horizon
+
+# Action registry configuration
+registry:
+  # Available action types
+  available_actions:
+  - PRODUCTIVITY  # Productivity tools
+  - REASONING     # Reasoning engine
+  - IR_RAG        # Information retrieval
+  
+  # Fallback mappings for unavailable actions
+  fallbacks:
+    CREATIVE: REASONING     # Creative tasks fallback to reasoning
+    IR_RAG: REASONING      # IR_RAG fallback to reasoning
+    MATH: REASONING        # Math tasks fallback to reasoning
+    MULTIMODAL: REASONING  # Multimodal tasks fallback to reasoning
+    RESPONSE: REASONING    # Response tasks fallback to reasoning
+  
+  # Task type mappings
+  mappings:
+    CONVERSATIONAL_FOLLOWUP: RESPONSE      # Follow-up conversations
+    CREATIVE_GENERATION: CREATIVE          # Creative content generation
+    INFORMATION_RETRIEVAL: IR_RAG         # Information retrieval tasks
+    KNOWLEDGE_REASONING: REASONING        # Knowledge-based reasoning
+    MATH_QUERY: MATH                      # Mathematical queries
+    MULTIMODAL_QUERY: MULTIMODAL          # Multimodal queries
+    TASK_PRODUCTIVITY: PRODUCTIVITY       # Productivity tasks
+
+# Request routing configuration
+router:
+  confidence_threshold: 0.55  # Minimum confidence for routing decisions
+  
+  # Feature extraction settings
+  features:
+    enable_reasoning_indicators: true  # Enable reasoning pattern detection
+    enable_temporal_indicators: true  # Enable temporal pattern detection
+    max_keywords: 20                  # Maximum keywords to extract
+    min_keyword_length: 3             # Minimum keyword length
+  
+  # Heuristic detection settings
+  heuristics:
+    enable_creative_detection: true    # Enable creative task detection
+    enable_multimodal_detection: true  # Enable multimodal task detection
+    enable_obvious_math: true          # Enable obvious math detection
+    enable_productivity_detection: true # Enable productivity task detection
+  
+  # LLM fallback settings
+  llm_fallback:
+    confidence_boost: 0.65  # Confidence boost for LLM decisions
+    enabled: true           # Enable LLM fallback
+  
+  strategy: hybrid  # Routing strategy (hybrid, rule-based, llm-based)
+
+# System-wide configuration
+system:
+  debug: true                    # Enable debug mode
+  default_timeout: 30           # Default timeout in seconds
+  environment: development      # Environment (development, testing, production)
+  max_execution_rounds: 2       # Maximum execution rounds per request
+  name: WebChasor              # System name
+  version: 1.0.0               # System version

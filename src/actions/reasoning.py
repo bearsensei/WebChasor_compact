@@ -20,6 +20,7 @@ from dotenv import load_dotenv
 import openai
 
 from artifacts import Action, Artifact, Context
+from config_manager import get_config
 
 # Load environment variables
 load_dotenv()
@@ -224,27 +225,34 @@ class REASONING(Action):
             # Get appropriate scaffold
             scaffold = REASONING_SCAFFOLDS[reasoning_type]
             
-            # Build reasoning prompt
-            prompt = self._build_reasoning_prompt(ctx.query, scaffold, ctx)
+            # Use synthesizer's generate method with proper constraints for natural output
+            constraints = {
+                "language": "auto",  # Let synthesizer detect language
+                "tone": "friendly, conversational",
+                "temperature": 0.1,
+                "instruction_hint": f"Focus on {reasoning_type.value} reasoning approach."
+            }
             
-            # Execute reasoning through synthesizer
-            text = await toolset.synthesizer.synthesize(
+            # Execute reasoning through synthesizer using generate method
+            text = await toolset.synthesizer.generate(
                 category="KNOWLEDGE_REASONING",
-                plan=None,
-                extracted=None,
-                user_query=prompt
+                style_key="default_analytical",
+                constraints=constraints,
+                materials=ctx.query,  # Pass the original query as materials
+                task_scaffold=None  # Let the hidden reasoning scaffold handle structure
             )
             
             # Validate output
             if not text or len(text.strip()) < 50:
                 logger.warning("Reasoning output seems too short, retrying...")
-                # Retry with more explicit instructions
-                enhanced_prompt = self._build_enhanced_prompt(ctx.query, scaffold)
-                text = await toolset.synthesizer.synthesize(
+                # Retry with more explicit constraints
+                constraints["instruction_hint"] = f"Provide a comprehensive {reasoning_type.value} explanation with concrete examples and practical insights."
+                text = await toolset.synthesizer.generate(
                     category="KNOWLEDGE_REASONING",
-                    plan=None,
-                    extracted=None,
-                    user_query=enhanced_prompt
+                    style_key="default_analytical", 
+                    constraints=constraints,
+                    materials=ctx.query,
+                    task_scaffold=None
                 )
             
             # Create artifact with metadata
@@ -312,7 +320,7 @@ class REASONING(Action):
         logger.info(f"Rule-based classification: {reasoning_type.value} (confidence: {confidence})")
         
         # Simple decision print
-        print(f"🧠 REASONING DECISION: {reasoning_type.value} (rule-based, confidence: {confidence})")
+        print(f"[REASONING][DECISION] {reasoning_type.value} conf={confidence} method=rule-based")
         
         return reasoning_type, confidence
     

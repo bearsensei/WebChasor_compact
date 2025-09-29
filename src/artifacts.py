@@ -60,10 +60,8 @@ class ActionRegistry:
             original_action = action_name
             action_name = fallback_mapping.get(action_name, "REASONING")
             
-            # Simple decision print
-            print(f"📋 REGISTRY DECISION: {router_category} → {original_action} → {action_name} (fallback)")
+            print(f"[REGISTRY][FALLBACK] {router_category} → {original_action} → {action_name}")
         else:
-            # Simple decision print
-            print(f"📋 REGISTRY DECISION: {router_category} → {action_name} (direct)")
+            print(f"[REGISTRY][DIRECT] {router_category} → {action_name}")
         
         return action_name

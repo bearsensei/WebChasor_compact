@@ -25,6 +25,7 @@ from dotenv import load_dotenv
 import openai
 
 from artifacts import Action, Artifact, Context
+from config_manager import get_config
 from prompt import (
     PRODUCTIVITY_SYSTEM_PROMPT,
     PRODUCTIVITY_SUMMARIZATION_PROMPT,
@@ -418,7 +419,7 @@ class PRODUCTIVITY(Action):
         task_type, confidence = self._determine_task_type(query)
         
         # Simple decision print
-        print(f"📝 PRODUCTIVITY DECISION: {task_type.value} (confidence: {confidence})")
+        print(f"[PRODUCTIVITY][DECISION] {task_type.value} conf={confidence}")
         
         # Extract source text
         source_text = self._extract_source_content(query)

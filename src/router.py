@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 import openai
 
 from prompt import ROUTER_PROMPT, USER_PROMPT, SYSTEM_PROMPT_MULTI
+from config_manager import get_config
 
 # Setup logging
 logger = logging.getLogger(__name__)
@@ -64,6 +65,7 @@ class RouterConfig:
     timeout: int = 30
     max_retries: int = 3
     temperature: float = 0.1
+    max_tokens: int = 500
     llm_confidence_threshold: float = 0.55
 
 class Router:
@@ -79,7 +81,7 @@ class Router:
         Args:
             config: Router configuration. If None, loads from environment.
         """
-        self.config = config or self._load_config_from_env()
+        self.config = config or self._load_config_from_yaml()
         self.client = self._init_openai_client()
         
         # Initialize lightweight classifier (placeholder for now)
@@ -87,24 +89,29 @@ class Router:
         
         logger.info(f"Router initialized with model: {self.config.model}")
     
-    def _load_config_from_env(self) -> RouterConfig:
-        """Load configuration from environment variables"""
-        api_base = os.getenv("OPENAI_API_BASE")
-        api_key = os.getenv("OPENAI_API_KEY_AGENT")
-        model = os.getenv("OPENAI_API_MODEL_AGENT_ROUTER")
+    def _load_config_from_yaml(self) -> RouterConfig:
+        """Load configuration from YAML config file with environment fallback"""
+        cfg = get_config()
         
-        if not all([api_base, api_key, model]):
+        # Get from config file first, then fallback to environment
+        api_base = cfg.get('external_services.openai.api_base') or os.getenv("OPENAI_API_BASE")
+        api_key = os.getenv("OPENAI_API_KEY_AGENT")  # Keep sensitive data in env
+        model = cfg.get('models.router.model_name', 'gpt-4')
+        
+        if not all([api_base, api_key]):
             missing = [k for k, v in {
                 "OPENAI_API_BASE": api_base,
                 "OPENAI_API_KEY_AGENT": api_key,
-                "OPENAI_API_MODEL_AGENT_ROUTER": model
             }.items() if not v]
             raise ValueError(f"Missing required environment variables: {missing}")
         
         return RouterConfig(
             api_base=api_base,
             api_key=api_key,
-            model=model
+            model=model,
+            temperature=cfg.get('models.router.temperature', 0.1),
+            max_tokens=cfg.get('models.router.max_tokens', 500),
+            timeout=cfg.get('performance.timeouts.llm_request', 30)
         )
     
     def _init_openai_client(self) -> openai.OpenAI:
@@ -167,7 +174,7 @@ class Router:
                 label, confidence = heuristic_result
                 method_used = "heuristic"
                 logger.info(f"Obvious heuristic match: {label} (confidence: {confidence})")
-                print(f"🧭 ROUTER DECISION: {label} (confidence: {confidence:.2f}, method: {method_used})")
+                print(f"[ROUTER][DECISION] {label} conf={confidence:.2f} method={method_used}")
                 return RouterResult(label=label, confidence=confidence, signals=signals)
             
             # 2) Try LLM first for all other cases

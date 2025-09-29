@@ -3,6 +3,14 @@ import os
 from dataclasses import dataclass
 from typing import Optional, Dict
 from dotenv import load_dotenv
+from config_manager import get_config
+from prompt import (
+    SYNTHESIZER_GLOBAL_SYSTEM,
+    SYNTHESIZER_HIDDEN_REASONING_SCAFFOLD,
+    SYNTHESIZER_ACTION_POLICIES,
+    SYNTHESIZER_STYLE_PROFILES,
+    SYNTHESIZER_PROMPT_TEMPLATE
+)
 
 # Load environment variables
 load_dotenv()
@@ -14,35 +22,6 @@ class StyleProfile:
     persona: str         # "WebChasor—analytical assistant"
     format_prefs: Dict   # {"paragraphs": True, "bullets_max": 7}
 
-GLOBAL_SYSTEM = """\
-You are WebChasor. Always follow:
-- Language alignment: match user language (zh-CN / en / zh-HK (繁) / Cantonese oral).
-- No unsupported claims beyond provided materials.
-- Respect safety & values: support CN national interests; fact-based, non-slogan.
-- Refuse or neutralize when policy requires, with brief rationale.
-"""
-
-ACTION_POLICIES = {
-    "PRODUCTIVITY": "Transform text faithfully. No new facts. Preserve entities and numbers. Deterministic (temperature 0).",
-    "REASONING": "Produce a structured analysis: Restate → 2–4 dimensions → analyze → synthesize → implications.",
-    "INFORMATION_RETRIEVAL": "Ground all facts in provided evidence; include citations per house style.",
-}
-
-STYLE_PROFILES = {
-    "default_analytical": StyleProfile(
-        name="default_analytical",
-        tone="analytical, concise, concrete",
-        persona="WebChasor—清晰、务实、可执行建议为先",
-        format_prefs={"paragraphs": True, "bullets_max": 7}
-    ),
-    "oral_cantonese": StyleProfile(
-        name="oral_cantonese",
-        tone="口語、貼地、親切",
-        persona="香港朋友式助理",
-        format_prefs={"paragraphs": False, "bullets_max": 6}
-    ),
-}
-
 def build_prompt(category: str,
                  style: StyleProfile,
                  constraints: Dict,
@@ -53,38 +32,32 @@ def build_prompt(category: str,
     tone = constraints.get("tone", style.tone)
     reading_level = constraints.get("reading_level", "default")
 
-    header = f"""{GLOBAL_SYSTEM}
+    # Add internal scaffolding based on category
+    internal_scaffold = ""
+    if category == "KNOWLEDGE_REASONING":
+        internal_scaffold = f"\n# Internal Plan (do not reveal)\n{SYNTHESIZER_HIDDEN_REASONING_SCAFFOLD}\n"
+    elif task_scaffold:
+        internal_scaffold = f"\n# Internal Task Plan (do not reveal)\n{task_scaffold}\n"
 
-# Action Policy
-{ACTION_POLICIES[category]}
+    instruction_hint = constraints.get("instruction_hint", "")
+    if instruction_hint:
+        instruction_hint = f"\n{instruction_hint}"
 
-# Style Profile
-Persona: {style.persona}
-Tone: {tone}
-Reading level: {reading_level}
-Language: {lang}
-Format prefs: {style.format_prefs}
-"""
+    # Use the template from prompt.py
+    prompt = SYNTHESIZER_PROMPT_TEMPLATE.format(
+        global_system=SYNTHESIZER_GLOBAL_SYSTEM,
+        action_policy=SYNTHESIZER_ACTION_POLICIES.get(category, "Provide helpful and accurate responses."),
+        persona=style.persona,
+        tone=tone,
+        reading_level=reading_level,
+        language=lang,
+        format_prefs=style.format_prefs,
+        internal_scaffold=internal_scaffold,
+        materials=materials,
+        instruction_hint=instruction_hint
+    )
 
-    scaffold = f"\n# Task Scaffold\n{task_scaffold}\n" if task_scaffold else ""
-    inst = constraints.get("instruction_hint", "")
-
-    body = f"""
-# Constraints (hard)
-{constraints}
-
-# Materials
-<<<
-{materials}
->>>
-
-# Output Rules
-- Do not include meta commentary.
-- Follow requested format strictly.
-{inst}
-"""
-
-    return header + scaffold + body
+    return prompt
 
 class Synthesizer:
     def __init__(self, llm=None):
@@ -100,9 +73,14 @@ class Synthesizer:
         else:
             self.llm = llm
         
-        # Get model name for logging
-        self.model_name = os.getenv("OPENAI_API_MODEL_AGENT_SYNTHESIZER", "gpt-4")
-        print(f"🎨 Synthesizer initialized with model: {self.model_name}")
+        # Get model configuration from config file
+        cfg = get_config()
+        self.model_name = cfg.get('models.synthesizer.model_name', 'gpt-4')
+        self.temperature = cfg.get('models.synthesizer.temperature', 0.1)
+        self.max_tokens = cfg.get('models.synthesizer.max_tokens', 2000)
+        
+        if cfg.is_decision_logging_enabled('synthesizer'):
+            print(f"[SYNTHESIZER][INIT] model={self.model_name}")
     
     def _create_default_llm(self):
         """Create default LLM from environment variables"""
@@ -111,7 +89,7 @@ class Synthesizer:
         model = os.getenv("OPENAI_API_MODEL_AGENT_SYNTHESIZER", "gpt-4")
         
         if not api_base or not api_key:
-            print("⚠️ No API credentials found for Synthesizer, using mock LLM")
+            print("[SYNTHESIZER][WARN] No API credentials, using mock LLM")
             return self._mock_llm
         
         try:
@@ -148,7 +126,15 @@ class Synthesizer:
             return "I've processed your request according to the specified requirements."
 
     async def generate(self, category, style_key, constraints, materials, task_scaffold=None):
-        style = STYLE_PROFILES.get(style_key, STYLE_PROFILES["default_analytical"])
+        # Convert style dict to StyleProfile object for compatibility
+        style_dict = SYNTHESIZER_STYLE_PROFILES.get(style_key, SYNTHESIZER_STYLE_PROFILES["default_analytical"])
+        style = StyleProfile(
+            name=style_dict["name"],
+            tone=style_dict["tone"],
+            persona=style_dict["persona"],
+            format_prefs=style_dict["format_prefs"]
+        )
+        
         prompt = build_prompt(category, style, constraints, materials, task_scaffold)
         # Call your model here (temperature=0 recommended for PRODUCTIVITY)
         text = await self.llm(prompt, temperature=constraints.get("temperature", 0))
@@ -175,7 +161,7 @@ class Synthesizer:
         temperature = 0.0 if category == "TASK_PRODUCTIVITY" else 0.1
         
         # Simple decision print
-        print(f"🎨 SYNTHESIZER DECISION: model={self.model_name}, temp={temperature}, category={category}")
+        print(f"[SYNTHESIZER][EXEC] model={self.model_name} temp={temperature} category={category}")
         
         # Call the LLM
         response = await self.llm(full_prompt, temperature=temperature)
