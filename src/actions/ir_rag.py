@@ -123,8 +123,7 @@ class Planner:
     def __init__(self, llm_client=None, model_name: str = None):
         """Initialize planner with LLM client"""
         self.client = llm_client
-        self.model_name = model_name or os.getenv("OPENAI_API_MODEL_AGENT_PLANNER", "gpt-3.5-turbo")
-        
+        self.model_name = model_name or get_config().get('models.planner.model_name', 'gpt-4')
         # Import planner prompt
         try:
             from prompt import PLANNER_PROMPT

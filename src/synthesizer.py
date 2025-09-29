@@ -84,9 +84,9 @@ class Synthesizer:
     
     def _create_default_llm(self):
         """Create default LLM from environment variables"""
-        api_base = os.getenv("OPENAI_API_BASE")
+        api_base = get_config().get('external_services.openai.api_base', 'https://api.openai.com/v1')
         api_key = os.getenv("OPENAI_API_KEY_AGENT") 
-        model = os.getenv("OPENAI_API_MODEL_AGENT_SYNTHESIZER", "gpt-4")
+        model = get_config().get('models.synthesizer.model_name', 'gpt-4')
         
         if not api_base or not api_key:
             print("[SYNTHESIZER][WARN] No API credentials, using mock LLM")

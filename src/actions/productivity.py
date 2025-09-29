@@ -248,9 +248,9 @@ class PRODUCTIVITY(Action):
     
     def _load_config_from_env(self) -> ProductivityConfig:
         """Load configuration from environment variables"""
-        api_base = os.getenv("OPENAI_API_BASE")
+        api_base = get_config().get('external_services.openai.api_base', 'https://api.openai.com/v1')
         api_key = os.getenv("OPENAI_API_KEY_AGENT")
-        model = os.getenv("OPENAI_API_MODEL_AGENT_PRODUCTIVITY", "gpt-3.5-turbo")
+        model = get_config().get('models.productivity.model_name', 'gpt-3.5-turbo')
         
         # LLM classification is optional
         use_llm = bool(api_base and api_key and model)

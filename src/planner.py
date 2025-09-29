@@ -5,11 +5,11 @@ from prompt import PLANNER_PROMPT, USER_PROMPT, SYSTEM_PROMPT_MULTI
 load_dotenv()
 import time
 # get env
-
-OPENAI_API_BASE = os.getenv("OPENAI_API_BASE")
+from config import get_config
+OPENAI_API_BASE = get_config().get('external_services.openai.api_base', 'https://api.openai.com/v1')
 OPENAI_API_KEY_AGENT = os.getenv("OPENAI_API_KEY_AGENT")
-OPENAI_API_MODEL_AGENT = os.getenv("OPENAI_API_MODEL_AGENT")
-OPENAI_API_MODEL_AGENT_PLANNER = os.getenv("OPENAI_API_MODEL_AGENT_PLANNER")
+OPENAI_API_MODEL_AGENT = get_config().get('models.agent.model_name', 'gpt-4')
+OPENAI_API_MODEL_AGENT_PLANNER = get_config().get('models.planner.model_name', 'gpt-4')
 
 # init openai client
 import openai

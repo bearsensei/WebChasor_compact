@@ -166,9 +166,9 @@ class REASONING(Action):
     
     def _load_config_from_env(self) -> ReasoningConfig:
         """Load configuration from environment variables"""
-        api_base = os.getenv("OPENAI_API_BASE")
+        api_base = get_config().get('external_services.openai.api_base', 'https://api.openai.com/v1')
         api_key = os.getenv("OPENAI_API_KEY_AGENT")
-        model = os.getenv("OPENAI_API_MODEL_AGENT_REASONING")  # Use router model for classification
+        model = get_config().get('models.reasoning.model_name', 'gpt-4')
         
         # Model classification is optional - fallback to rule-based if not configured
         # Disable model classification for now to avoid API issues

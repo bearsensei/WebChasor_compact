@@ -38,7 +38,7 @@ async def run_demo():
     
     # Create OpenAI client for IR_RAG if credentials are available
     llm_client = None
-    api_base = os.getenv("OPENAI_API_BASE")
+    api_base = get_config().get('external_services.openai.api_base')
     api_key = os.getenv("OPENAI_API_KEY_AGENT")
     
     if api_base and api_key:
