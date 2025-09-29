@@ -176,7 +176,7 @@ class Planner:
             )
             
             plan_text = response.choices[0].message.content.strip()
-            print(f"Planner response: {plan_text}")
+            # print(f"Planner response: {plan_text}")
             # Parse JSON response
             try:
                 plan_data = json.loads(plan_text)

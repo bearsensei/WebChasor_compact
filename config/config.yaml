@@ -95,7 +95,7 @@ models:
   extractor:
     fallback_enabled: true       # Enable fallback mechanisms
     max_tokens: 1000            # Maximum tokens for extraction
-    model_name: gpt-oss-120b   # Model name for extraction
+    model_name: gpt-oss-20b   # Model name for extraction
     provider: openai            # Model provider
     temperature: 0.0            # Temperature for deterministic output
   
@@ -103,7 +103,7 @@ models:
   planner:
     fallback_enabled: true       # Enable fallback mechanisms
     max_tokens: 1500            # Maximum tokens for planning
-    model_name: gpt-oss-120b           # Model name for planning
+    model_name: gpt-oss-20b           # Model name for planning
     provider: openai            # Model provider
     temperature: 0.1            # Low temperature for consistent planning
   
@@ -111,7 +111,7 @@ models:
   router:
     fallback_enabled: true       # Enable fallback mechanisms
     max_tokens: 500             # Maximum tokens for routing decisions
-    model_name: gpt-oss-120b   # Model name for routing
+    model_name: gpt-oss-20b   # Model name for routing
     provider: openai            # Model provider
     temperature: 0.1            # Low temperature for consistent routing
   
@@ -127,7 +127,7 @@ models:
   reasoning:
     fallback_enabled: true       # Enable fallback mechanisms
     max_tokens: 2000            # Maximum tokens for reasoning
-    model_name: gpt-4           # Model name for reasoning
+    model_name: gpt-oss-20b           # Model name for reasoning
     provider: openai            # Model provider
     temperature: 0.1            # Low temperature for consistent reasoning
   
@@ -135,7 +135,7 @@ models:
   productivity:
     fallback_enabled: true       # Enable fallback mechanisms
     max_tokens: 1500            # Maximum tokens for productivity tasks
-    model_name: gpt-oss-120b   # Model name for productivity
+    model_name: gpt-oss-20b   # Model name for productivity
     provider: openai            # Model provider
     temperature: 0.0            # Deterministic output for productivity
 
