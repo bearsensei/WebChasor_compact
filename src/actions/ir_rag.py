@@ -213,23 +213,47 @@ class Planner:
     
     def _create_fallback_plan(self, query: str) -> ExtractionPlan:
         """Create a simple fallback plan when LLM planning fails"""
-        # Extract key terms for basic planning
-        key_terms = re.findall(r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b', query)
-        entity = key_terms[0] if key_terms else "unknown"
+        # Extract key terms for basic planning - support both English and Chinese
+        english_terms = re.findall(r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b', query)
+        chinese_terms = re.findall(r'[\u4e00-\u9fff]+', query)
         
-        # Create basic extraction tasks
-        tasks = [
-            PlanTask(
-                fact=f"What is the basic definition or description of {entity}?",
-                variable_name="basic_info",
-                category="background"
-            ),
-            PlanTask(
-                fact=f"What are the key facts or recent information about {entity}?",
-                variable_name="key_facts",
-                category="recent_situation"
-            )
-        ]
+        # Prefer Chinese terms for Chinese queries, English terms for English queries
+        if chinese_terms:
+            entity = chinese_terms[0]  # Use first Chinese term
+        elif english_terms:
+            entity = english_terms[0]  # Use first English term
+        else:
+            entity = "unknown"
+        
+        # Create basic extraction tasks with appropriate language
+        if chinese_terms:
+            # Use Chinese for Chinese queries
+            tasks = [
+                PlanTask(
+                    fact=f"关于{entity}的基本信息是什么？",
+                    variable_name="basic_info",
+                    category="background"
+                ),
+                PlanTask(
+                    fact=f"关于{entity}的最新信息有哪些？",
+                    variable_name="key_facts",
+                    category="recent_situation"
+                )
+            ]
+        else:
+            # Use English for English queries
+            tasks = [
+                PlanTask(
+                    fact=f"What is the basic information about {entity}?",
+                    variable_name="basic_info",
+                    category="background"
+                ),
+                PlanTask(
+                    fact=f"What are the recent facts about {entity}?",
+                    variable_name="key_facts",
+                    category="recent_situation"
+                )
+            ]
         
         return ExtractionPlan(
             archetype="general",
@@ -968,7 +992,7 @@ class IR_RAG(Action):
             
             response = await toolset.synthesizer.generate(
                 category="INFORMATION_RETRIEVAL",
-                style_key="default_analytical",
+                style_key="auto",  # 使用 auto 启用自动语言检测和样式选择
                 constraints=constraints,
                 materials=f"Query: {ctx.query}\n\nExtracted Information:\n{materials}",
                 task_scaffold=None

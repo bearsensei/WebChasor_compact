@@ -33,12 +33,13 @@ class ThinkingPlan:
             return
         
         # Build thinking prompt
-        thinking_prompt = f""" First, you are a helpful assistant. You need to check if the question need a thinking process. If it does, please generate a detailed thinking process for the following question. If it does not, please just finished the generation and output "no thinking process needed".
-        Please generate a detailed thinking process for the following question. Requirements:
+        thinking_prompt = f""" First, you are a helpful assistant. You need to check if the question need a thinking trace. If it does, please generate a detailed thinking trace for the following question, including INFORMATION_RETRIEVAL, MATH_QUERY, TASK_PRODUCTIVITY , KNOWLEDGE_REASONING, CREATIVE_GENERATION, MULTIMODAL_QUERY, around 300 words. 
+        If it like a conversational followup, greeting, general question, identity question, please also generate a relative comprehensive thinking process, no need to be complicated, around 100 words.
+
+For detailed thinking trace, requirements:
 1. Analyze key elements of the problem
 2. Think through steps to solve the problem. BUT do not include the answer, just raise the questions.
-3. List all possible angles and approaches
-4. Use natural language and clear logic
+3. List all possible angles and approaches. No need to use table. Use natural language: first...second...then...maybe i also need to... lastly...
 5. Do not include <think></think> tags, I will add them automatically
 
 Question: {query}

@@ -1,7 +1,7 @@
 # read env file
 import os
 from dotenv import load_dotenv
-from prompt import PLANNER_PROMPT, USER_PROMPT, SYSTEM_PROMPT_MULTI
+from prompt import PLANNER_PROMPT
 load_dotenv()
 import time
 # get env

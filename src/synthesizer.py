@@ -8,9 +8,9 @@ from prompt import (
     SYNTHESIZER_GLOBAL_SYSTEM,
     SYNTHESIZER_HIDDEN_REASONING_SCAFFOLD,
     SYNTHESIZER_ACTION_POLICIES,
-    SYNTHESIZER_STYLE_PROFILES,
-    SYNTHESIZER_PROMPT_TEMPLATE
+    render_synthesizer_prompt
 )
+from utils.lang_detect import detect_lang_4way
 
 # Load environment variables
 load_dotenv()
@@ -27,37 +27,17 @@ def build_prompt(category: str,
                  constraints: Dict,
                  materials: str,
                  task_scaffold: Optional[str] = None) -> str:
-    # Language / tone from constraints override profile if present
-    lang = constraints.get("language", "auto")
-    tone = constraints.get("tone", style.tone)
-    reading_level = constraints.get("reading_level", "default")
-
-    # Add internal scaffolding based on category
-    internal_scaffold = ""
-    if category == "KNOWLEDGE_REASONING":
-        internal_scaffold = f"\n# Internal Plan (do not reveal)\n{SYNTHESIZER_HIDDEN_REASONING_SCAFFOLD}\n"
-    elif task_scaffold:
-        internal_scaffold = f"\n# Internal Task Plan (do not reveal)\n{task_scaffold}\n"
-
-    instruction_hint = constraints.get("instruction_hint", "")
-    if instruction_hint:
-        instruction_hint = f"\n{instruction_hint}"
-
-    # Use the template from prompt.py
-    prompt = SYNTHESIZER_PROMPT_TEMPLATE.format(
-        global_system=SYNTHESIZER_GLOBAL_SYSTEM,
+    # 直接使用 render_synthesizer_prompt 函数
+    return render_synthesizer_prompt(
         action_policy=SYNTHESIZER_ACTION_POLICIES.get(category, "Provide helpful and accurate responses."),
-        persona=style.persona,
-        tone=tone,
-        reading_level=reading_level,
-        language=lang,
-        format_prefs=style.format_prefs,
-        internal_scaffold=internal_scaffold,
         materials=materials,
-        instruction_hint=instruction_hint
+        user_query=materials,  # 将 materials 作为 user_query 传递用于语言检测
+        language=constraints.get("language"),
+        reading_level=constraints.get("reading_level", "general"),
+        preferred_style=None,  # 让函数自动检测样式
+        global_system=SYNTHESIZER_GLOBAL_SYSTEM,
+        internal_scaffold=SYNTHESIZER_HIDDEN_REASONING_SCAFFOLD if category == "KNOWLEDGE_REASONING" else (task_scaffold or "")
     )
-
-    return prompt
 
 class Synthesizer:
     def __init__(self, llm=None):
@@ -126,20 +106,29 @@ class Synthesizer:
             return "I've processed your request according to the specified requirements."
 
     async def generate(self, category, style_key, constraints, materials, task_scaffold=None):
-        # Convert style dict to StyleProfile object for compatibility
-        style_dict = SYNTHESIZER_STYLE_PROFILES.get(style_key, SYNTHESIZER_STYLE_PROFILES["default_analytical"])
-        style = StyleProfile(
-            name=style_dict["name"],
-            tone=style_dict["tone"],
-            persona=style_dict["persona"],
-            format_prefs=style_dict["format_prefs"]
-        )
+        # 直接使用 render_synthesizer_prompt，它会自动处理样式选择和语言检测
         
-        prompt = build_prompt(category, style, constraints, materials, task_scaffold)
-        # Call your model here (temperature=0 recommended for PRODUCTIVITY)
-        text = await self.llm(prompt, temperature=constraints.get("temperature", 0))
-        return text
-    
+
+        auto_lang = detect_lang_4way(materials) # 若没有 user_query，可退回 materials
+        print(f'[SYNTHESIZER][LANG_DEBUG] auto_lang: {auto_lang}')
+        prompt = render_synthesizer_prompt(
+            action_policy=SYNTHESIZER_ACTION_POLICIES.get(category, "Provide helpful and accurate responses."),
+            materials=materials,
+            user_query=materials,
+            language=auto_lang,
+            reading_level=constraints.get("reading_level", "general"),
+            preferred_style=(style_key if style_key and style_key != "auto" else None),
+            global_system=SYNTHESIZER_GLOBAL_SYSTEM,
+            internal_scaffold=(SYNTHESIZER_HIDDEN_REASONING_SCAFFOLD if category == "KNOWLEDGE_REASONING" else "")
+        )
+
+        temperature = 0.0 if category == "TASK_PRODUCTIVITY" else constraints.get("temperature", 0.1)
+        print(f"[SYNTHESIZER][EXEC] model={self.model_name} temp={temperature} category={category} lang={auto_lang}")
+
+        # 3) 把渲染后的 prompt 交给模型
+        response = await self.llm(prompt, temperature=temperature)
+        return response
+            
     async def synthesize(self, category, plan=None, extracted=None, user_query="", system_prompt=""):
         """
         Synthesize method for compatibility with PRODUCTIVITY and REASONING actions.

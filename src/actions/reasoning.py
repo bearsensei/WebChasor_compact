@@ -236,7 +236,7 @@ class REASONING(Action):
             # Execute reasoning through synthesizer using generate method
             text = await toolset.synthesizer.generate(
                 category="KNOWLEDGE_REASONING",
-                style_key="default_analytical",
+                style_key="auto",  # 使用 auto 启用自动语言检测和样式选择
                 constraints=constraints,
                 materials=ctx.query,  # Pass the original query as materials
                 task_scaffold=None  # Let the hidden reasoning scaffold handle structure
@@ -249,7 +249,7 @@ class REASONING(Action):
                 constraints["instruction_hint"] = f"Provide a comprehensive {reasoning_type.value} explanation with concrete examples and practical insights."
                 text = await toolset.synthesizer.generate(
                     category="KNOWLEDGE_REASONING",
-                    style_key="default_analytical", 
+                    style_key="auto",  # 使用 auto 启用自动语言检测和样式选择
                     constraints=constraints,
                     materials=ctx.query,
                     task_scaffold=None

@@ -15,7 +15,7 @@ from dataclasses import dataclass, asdict
 from dotenv import load_dotenv
 import openai
 
-from prompt import ROUTER_PROMPT, USER_PROMPT, SYSTEM_PROMPT_MULTI
+from prompt import ROUTER_PROMPT
 from config_manager import get_config
 
 # Setup logging
@@ -390,6 +390,8 @@ class Router:
                 {"role": "user", "content": user_content}
             ]
             
+            print(f"[ROUTER][DEBUG] Calling LLM router for query: {query[:50]}...")
+            
             response = self.client.chat.completions.create(
                 model=self.config.model,
                 messages=messages,
@@ -398,25 +400,32 @@ class Router:
             )
             
             raw_response = response.choices[0].message.content
+            print(f"[ROUTER][DEBUG] LLM response: '{raw_response}'")
             
             # Check if response is valid
-            if not raw_response or not raw_response.strip():
-                logger.warning("LLM router returned empty response")
-                return QueryCategory.CONVERSATIONAL_FOLLOWUP.value  # 改为 CONVERSATIONAL_FOLLOWUP
+            if (not raw_response or 
+                not raw_response.strip() or 
+                raw_response.strip().lower() in ['none', 'null', 'n/a']):
+                logger.warning(f"LLM router returned invalid response '{raw_response}' for query: {query[:100]}")
+                print(f"[ROUTER][DEBUG] Invalid response '{raw_response}', falling back to CONVERSATIONAL_FOLLOWUP")
+                return QueryCategory.CONVERSATIONAL_FOLLOWUP.value
             
             # Extract category from response
             response_upper = raw_response.strip().upper()
             for category in QueryCategory:
                 if category.value in response_upper:
+                    print(f"[ROUTER][DEBUG] Matched category: {category.value}")
                     return category.value
             
             # Fallback to conversational followup for unclear responses
             logger.warning(f"LLM router couldn't parse response: {raw_response}")
-            return QueryCategory.CONVERSATIONAL_FOLLOWUP.value  # 改为 CONVERSATIONAL_FOLLOWUP
+            print(f"[ROUTER][DEBUG] Couldn't parse response '{raw_response}', falling back to CONVERSATIONAL_FOLLOWUP")
+            return QueryCategory.CONVERSATIONAL_FOLLOWUP.value
             
         except Exception as e:
             logger.error(f"LLM router failed: {e}")
-            return QueryCategory.CONVERSATIONAL_FOLLOWUP.value  # 改为 CONVERSATIONAL_FOLLOWUP
+            print(f"[ROUTER][DEBUG] Exception in LLM router: {e}")
+            return QueryCategory.CONVERSATIONAL_FOLLOWUP.value
     
     async def health_check(self) -> Dict[str, Any]:
         """Perform health check on the router"""

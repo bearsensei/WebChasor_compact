@@ -1,5 +1,5 @@
 # init prompt
-
+import json
 SYSTEM_PROMPT_MULTI = '''You are a Web Information Seeking Master. Your task is to thoroughly seek the internet for information and provide accurate answers to questions. No matter how complex the query, you will not give up until you find the corresponding information.
 
 As you proceed, adhere to the following principles:
@@ -426,7 +426,7 @@ SYNTHESIZER_ACTION_POLICIES = {
     "PRODUCTIVITY": "Transform text faithfully. No new facts. Preserve entities and numbers. Deterministic (temperature 0).",
     "REASONING": "Provide a natural, conversational explanation that flows smoothly. Use the internal reasoning structure but present it as a cohesive, friendly response.",
     "KNOWLEDGE_REASONING": "Provide a natural, conversational explanation that flows smoothly. Use the internal reasoning structure but present it as a cohesive, friendly response.",
-    "INFORMATION_RETRIEVAL": "Ground all facts in provided evidence; include citations per house style.",
+    "INFORMATION_RETRIEVAL": "Ground all facts in provided evidence; include citations per house style; attach the reference list to the end of the answer and correspond to the citations.",
 }
 
 # Style profiles for different response styles
@@ -718,5 +718,133 @@ PRODUCTIVITY_ERROR_MESSAGES = {
     "processing_error": "An error occurred during processing. Please try rephrasing your request."
 }
 
+# ============================================================================
+# STYLE ROUTING HELPERS
+# ============================================================================
+
+# Style routing helpers (explicit > implicit > default)
+CANTONESE_MARKERS = {"呀", "喇", "咩", "冇", "嘅", "喺", "哂", "啲", "唔", "啱", "咗", "嚟", "嗰", "囉", "呢", "架", "嘛", "嘞", "咪", "咯"}
+FRIENDLY_MARKERS_EN = {"friendly", "conversational", "chatty", "approachable", "casual"}
+FRIENDLY_MARKERS_ZH = {"口语", "口語", "亲切", "親切", "聊天", "友好", "轻松", "輕鬆"}
+
+def _detect_language(user_text: str) -> str:
+    """
+    Tiny heuristic detector (avoid heavy deps):
+    Returns one of: 'zh-HK', 'zh-CN', 'en'
+    """
+    if not user_text:
+        return "en"
+    # Cantonese heuristic: presence of Cantonese particles
+    if any(ch in user_text for ch in CANTONESE_MARKERS):
+        return "zh-HK"
+    # Chinese heuristic
+    if any("\u4e00" <= ch <= "\u9fff" for ch in user_text):
+        # If mentions 香港/廣東/粵語 → zh-HK
+        if ("香港" in user_text) or ("粵語" in user_text) or ("粤语" in user_text):
+            return "zh-HK"
+        return "zh-CN"
+    return "en"
+
+def pick_style_profile(user_text: str = "", preferred_style: str = None, language: str = None) -> dict:
+    """
+    Selection order:
+      1) explicit preferred_style if valid
+      2) implicit triggers from language + markers
+      3) default_analytical
+    Returns the style profile dict.
+    """
+    profiles = SYNTHESIZER_STYLE_PROFILES
+    # 1) explicit
+    if preferred_style and preferred_style in profiles:
+        return profiles[preferred_style]
+
+    # 2) implicit
+    lang = language or _detect_language(user_text)
+    lowered = (user_text or "").lower()
+    if lang == "zh-HK":
+        return profiles["oral_cantonese"]
+    # English/Chinese friendly markers
+    if any(k in lowered for k in FRIENDLY_MARKERS_EN) or any(k in user_text for k in FRIENDLY_MARKERS_ZH):
+        # Fix typo: display as "Friendly Conversational" in UI, but dict key is "friendly_conversational"
+        return profiles["friendly_conversational"]
+
+    # 3) default
+    return profiles["default_analytical"]
 
 
+
+def _normalize_lang_code(lang: str | None) -> str:
+    if not lang:
+        return "zh-Hans"
+    l = lang.strip().lower()
+    mapping = {
+        # 简体
+        "zh-cn": "zh-Hans", "zh_simplified": "zh-Hans", "zh-hans": "zh-Hans", "cn": "zh-Hans",
+        # 繁体（普通话）
+        "zh-tw": "zh-Hant", "zh-hant": "zh-Hant", "tw": "zh-Hant",
+        # 粤语（香港口语书写）
+        "zh-hk": "yue-Hant-HK", "yue": "yue-Hant-HK", "yue-hk": "yue-Hant-HK", "zh-yue": "yue-Hant-HK",
+        # 英文
+        "en-us": "en", "en-gb": "en", "english": "en",
+    }
+    return mapping.get(l, lang)
+
+def render_synthesizer_prompt(
+    action_policy: str,
+    materials: str,
+    user_query: str,
+    language: str = None,
+    reading_level: str = "general",
+    preferred_style: str = None,
+    global_system: str = SYNTHESIZER_GLOBAL_SYSTEM,
+    internal_scaffold: str = SYNTHESIZER_HIDDEN_REASONING_SCAFFOLD,
+    instruction_hint: str = ""
+) -> str:
+    # 归一化语言码（兼容你外部传入 & 内部检测）
+    lang_raw = language or _detect_language(user_query)
+    lang = _normalize_lang_code(lang_raw)
+
+    # 选 style；如未指定且为粤语，强制走口语风格
+    style = pick_style_profile(user_query, preferred_style=preferred_style, language=lang)
+    if lang == "yue-Hant-HK" and (preferred_style is None or style.get("name") != "oral_cantonese"):
+        # 为粤语注入更口语化的人设/语气（可根据你现有 style 库微调）
+        style = {
+            **style,
+            "name": "oral_cantonese",
+            "persona": style.get("persona", "WebChasor (HK)"),
+            "tone": "friendly, conversational, local",
+            "format_prefs": style.get("format_prefs", {"paragraphs": True, "bullets_max": 7})
+        }
+
+    persona = style.get("persona", "WebChasor")
+    tone = style.get("tone", "analytical, concise, concrete")
+    format_prefs = style.get("format_prefs", {"paragraphs": True, "bullets_max": 7})
+    format_prefs_json = json.dumps(format_prefs, ensure_ascii=False)
+
+    # 语言指令统一到四类
+    if lang == "yue-Hant-HK":
+        language_instruction = "廣東話（香港口語書寫，允許語氣詞：呀、啦、喇、囉、喎、嘛）"
+    elif lang == "zh-Hans":
+        language_instruction = "简体中文（普通话书面）"
+    elif lang == "zh-Hant":
+        language_instruction = "繁體中文（普通話書面）"
+    elif lang == "en":
+        language_instruction = "English"
+    else:
+        language_instruction = lang  # 保底
+
+    # ⚠️ 确保你的模板里用的是这些占位符：
+    # {global_system} {action_policy} {persona} {tone} {reading_level}
+    # {language} {format_prefs_json} {internal_scaffold} {materials} {instruction_hint}
+    return SYNTHESIZER_PROMPT_TEMPLATE.format(
+        global_system=global_system,
+        action_policy=action_policy,
+        persona=persona,
+        tone=tone,
+        reading_level=reading_level,
+        language=language_instruction,
+        format_prefs=format_prefs_json,
+        internal_scaffold=internal_scaffold or "",
+        materials=materials,
+        instruction_hint=instruction_hint or ""
+    )
