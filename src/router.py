@@ -33,6 +33,7 @@ class QueryCategory(Enum):
     CONVERSATIONAL_FOLLOWUP = "CONVERSATIONAL_FOLLOWUP"
     CREATIVE_GENERATION = "CREATIVE_GENERATION"
     MULTIMODAL_QUERY = "MULTIMODAL_QUERY"
+    GEO_QUERY = "GEO_QUERY"
 
 @dataclass
 class RouterSignals:
@@ -40,6 +41,7 @@ class RouterSignals:
     has_media: bool
     needs_external_facts: bool
     numeric_only: bool
+    
 
 @dataclass
 class RouterResult:
@@ -47,14 +49,18 @@ class RouterResult:
     label: str
     confidence: float
     signals: RouterSignals
+    extras: Dict[str, Any] | None = None 
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary format"""
-        return {
+        base = {
             "label": self.label,
             "confidence": self.confidence,
             "signals": asdict(self.signals)
         }
+        if self.extras is not None:
+            base["extras"] = self.extras
+        return base
 
 @dataclass
 class RouterConfig:
@@ -396,11 +402,17 @@ class Router:
                 model=self.config.model,
                 messages=messages,
                 temperature=self.config.temperature,
-                max_tokens=100
+                max_tokens=200  # 减少 tokens，类别名称只需要几个词
             )
             
             raw_response = response.choices[0].message.content
-            print(f"[ROUTER][DEBUG] LLM response: '{raw_response}'")
+            finish_reason = response.choices[0].finish_reason
+            print(f"[ROUTER][DEBUG] LLM response: '{raw_response}' (finish_reason: {finish_reason})")
+            
+            # 警告：如果被截断
+            if finish_reason == 'length':
+                logger.warning(f"LLM response was truncated (finish_reason=length)")
+                print(f"[ROUTER][DEBUG] Response was truncated by max_tokens limit")
             
             # Check if response is valid
             if (not raw_response or 
@@ -412,9 +424,17 @@ class Router:
             
             # Extract category from response
             response_upper = raw_response.strip().upper()
+            
+            # Try exact match first
             for category in QueryCategory:
-                if category.value in response_upper:
-                    print(f"[ROUTER][DEBUG] Matched category: {category.value}")
+                if category.value == response_upper:
+                    print(f"[ROUTER][DEBUG] Matched category (exact): {category.value}")
+                    return category.value
+            
+            # Try partial match (response is substring of category)
+            for category in QueryCategory:
+                if response_upper in category.value:
+                    print(f"[ROUTER][DEBUG] Matched category (partial): {category.value} (from '{response_upper}')")
                     return category.value
             
             # Fallback to conversational followup for unclear responses

@@ -13,7 +13,7 @@ import time
 import uuid
 import random
 from dotenv import load_dotenv
-
+from utils.timectx import parse_time_intent
 # Load environment variables from .env file
 load_dotenv()
 # Add the project root to Python path
@@ -32,7 +32,7 @@ from actions.productivity import PRODUCTIVITY
 from actions.reasoning import REASONING
 from actions.ir_rag import IR_RAG
 from toolsets import Toolset
-from config_manager import get_config
+from config_manager import get_config, get_global_gate, get_llm_gate
 # 按你现有目录结构保留 import；此处未直接调用，但保留兼容性
 from utils.thinking_coordinator import coordinate_unified_response  # noqa: F401
 
@@ -109,6 +109,8 @@ class WebChasorService:
         if not self.initialized:
             await self.initialize()
         try:
+            time_context = parse_time_intent(query)
+            print(f"[SERVICE] Time context: {time_context}")
             # 路由查询
             category_enum = await self.router.classify("", query)
             category = category_enum.value
@@ -122,14 +124,22 @@ class WebChasorService:
                 history="", 
                 query=query, 
                 router_category=category, 
-                hints={}
+                hints={},
+                time_context=time_context
             )
             result = await action.run(ctx, self.toolset)
             return {
                 "category": category,
                 "action": action_name,
                 "content": result.content,
-                "meta": result.meta or {}
+                "meta": result.meta or {},
+                "time_context": {
+                    "intent": time_context.intent,
+                    "window": time_context.window,
+                    "granularity": time_context.granularity,
+                    "explicit_dates": time_context.explicit_dates,
+                    "display_cutoff": time_context.display_cutoff
+                }
             }
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Query execution failed: {str(e)}")
@@ -405,47 +415,73 @@ async def chat_completions(
     # 简单的 API key 验证（可选）
     # if authorization and not authorization.startswith("Bearer "):
     #     raise HTTPException(status_code=401, detail="Invalid authorization header")
+    
+    # 获取信号量
+    global_gate = get_global_gate()
+    llm_gate = get_llm_gate()
+    
     if request.stream:
-        # 流式响应
+        # 流式响应 - 使用信号量控制并发
+        async def controlled_stream():
+            """带并发控制的流式生成器"""
+            async with global_gate:
+                print(f"[CONCURRENCY] Global gate acquired (available: {global_gate._value})")
+                async with llm_gate:
+                    print(f"[CONCURRENCY] LLM gate acquired (available: {llm_gate._value})")
+                    async for chunk in generate_openai_compatible_stream(request):
+                        yield chunk
+                    print(f"[CONCURRENCY] LLM gate released")
+                print(f"[CONCURRENCY] Global gate released")
+        
         return StreamingResponse(
-            generate_openai_compatible_stream(request),
-            media_type="text/plain",
+            controlled_stream(),
+            media_type="text/event-stream",
             headers={
-                "Cache-Control": "no-cache",
+                "Cache-Control": "no-cache, no-transform",
+                "X-Accel-Buffering": "no",
                 "Connection": "keep-alive",
-                "Content-Type": "text/plain; charset=utf-8"
             }
         )
     else:
-        # 非流式响应
-        user_message = None
-        for msg in reversed(request.messages):
-            if msg.role == "user":
-                user_message = msg.content
-                break
-        if not user_message:
-            raise HTTPException(status_code=400, detail="No user message found")
-        result = await webchasor_service.execute_query(user_message)
-        formatted_content = format_content_for_chatbox(result["content"])
-        return {
-            "id": f"chatcmpl-{uuid.uuid4().hex[:8]}",
-            "object": "chat.completion",
-            "created": int(time.time()),
-            "model": request.model,
-            "choices": [{
-                "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": formatted_content
-                },
-                "finish_reason": "stop"
-            }],
-            "usage": {
-                "prompt_tokens": len(user_message.split()),
-                "completion_tokens": len(formatted_content.split()),
-                "total_tokens": len(user_message.split()) + len(formatted_content.split())
+        # 非流式响应 - 使用信号量控制并发
+        async with global_gate:
+            print(f"[CONCURRENCY] Global gate acquired (available: {global_gate._value})")
+            async with llm_gate:
+                print(f"[CONCURRENCY] LLM gate acquired (available: {llm_gate._value})")
+                
+                user_message = None
+                for msg in reversed(request.messages):
+                    if msg.role == "user":
+                        user_message = msg.content
+                        break
+                if not user_message:
+                    raise HTTPException(status_code=400, detail="No user message found")
+                
+                result = await webchasor_service.execute_query(user_message)
+                formatted_content = format_content_for_chatbox(result["content"])
+                
+                print(f"[CONCURRENCY] LLM gate released")
+            print(f"[CONCURRENCY] Global gate released")
+            
+            return {
+                "id": f"chatcmpl-{uuid.uuid4().hex[:8]}",
+                "object": "chat.completion",
+                "created": int(time.time()),
+                "model": request.model,
+                "choices": [{
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": formatted_content
+                    },
+                    "finish_reason": "stop"
+                }],
+                "usage": {
+                    "prompt_tokens": len(user_message.split()),
+                    "completion_tokens": len(formatted_content.split()),
+                    "total_tokens": len(user_message.split()) + len(formatted_content.split())
+                }
             }
-        }
 
 @app.get("/v1/models")
 async def list_models():

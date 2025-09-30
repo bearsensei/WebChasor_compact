@@ -1,16 +1,20 @@
 #!/bin/bash
 # 启动 WebChasor API 服务器的脚本
 
+# 获取脚本所在目录的绝对路径
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
 # 设置环境变量
-export PYTHONPATH="/home/hkgai/SearchAgentProject/WebChasor_compact/src:$PYTHONPATH"
+export PYTHONPATH="$PROJECT_ROOT/src:$PYTHONPATH"
 
 # 进入项目目录
-cd /home/hkgai/SearchAgentProject/WebChasor_compact
+cd "$PROJECT_ROOT"
 
 # 尝试找到并激活虚拟环境
 VENV_PATHS=(
-    "/home/hkgai/miniconda3/envs/webdancer/bin/activate"
-    "/home/hkgai/anaconda3/envs/webdancer/bin/activate"
+    "$HOME/miniconda3/envs/webchaser/bin/activate"
+    "$HOME/anaconda3/envs/webchaser/bin/activate"
     "$HOME/miniconda3/envs/webdancer/bin/activate"
     "$HOME/anaconda3/envs/webdancer/bin/activate"
     "./venv/bin/activate"

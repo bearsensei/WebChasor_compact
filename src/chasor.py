@@ -13,6 +13,7 @@ import logging
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass
 from artifacts import ActionRegistry, Context, Artifact
+from utils.timectx import parse_time_intent
 
 # Setup logging
 logger = logging.getLogger(__name__)
@@ -70,7 +71,8 @@ class ChasorCore:
         """
         try:
             logger.info(f"Starting execution for query: {user_query[:100]}...")
-            
+            time_context = parse_time_intent(user_query)
+            logger.info(f"Time context: {time_context}")
             # Route the query to appropriate category
             category_enum = await self.router.classify(history, user_query)
             category = category_enum.value  # Convert enum to string
@@ -81,7 +83,8 @@ class ChasorCore:
                 history=history, 
                 query=user_query, 
                 router_category=category, 
-                hints={}
+                hints={},
+                time_context=time_context
             )
             action = self.registry.get(self.registry.route(category))
             

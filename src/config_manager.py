@@ -5,6 +5,7 @@ Handles loading and accessing configuration from YAML files
 
 import os
 import yaml
+import asyncio
 from typing import Dict, Any, Optional, Union
 from pathlib import Path
 import logging
@@ -271,6 +272,10 @@ class ConfigManager:
 # Global configuration instance
 _config_instance = None
 
+# Global semaphore instances
+_global_gate = None
+_llm_gate = None
+
 def get_config() -> ConfigManager:
     """
     Get global configuration instance (singleton pattern)
@@ -282,6 +287,34 @@ def get_config() -> ConfigManager:
     if _config_instance is None:
         _config_instance = ConfigManager()
     return _config_instance
+
+def get_global_gate() -> asyncio.Semaphore:
+    """
+    Get global concurrent request semaphore (singleton pattern)
+    
+    Returns:
+        Semaphore for limiting global concurrent requests
+    """
+    global _global_gate
+    if _global_gate is None:
+        max_requests = get_config().get('performance.concurrency.max_concurrent_requests', 100)
+        _global_gate = asyncio.Semaphore(max_requests)
+        logger.info(f"Global gate initialized with limit: {max_requests}")
+    return _global_gate
+
+def get_llm_gate() -> asyncio.Semaphore:
+    """
+    Get LLM concurrent request semaphore (singleton pattern)
+    
+    Returns:
+        Semaphore for limiting LLM concurrent requests
+    """
+    global _llm_gate
+    if _llm_gate is None:
+        llm_limit = get_config().get('performance.concurrency.llm_concurrent_limit', 20)
+        _llm_gate = asyncio.Semaphore(llm_limit)
+        logger.info(f"LLM gate initialized with limit: {llm_limit}")
+    return _llm_gate
 
 def reload_config():
     """Reload global configuration"""

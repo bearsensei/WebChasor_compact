@@ -11,7 +11,7 @@ from prompt import (
     render_synthesizer_prompt
 )
 from utils.lang_detect import detect_lang_4way
-
+from utils.timectx import TimeContext
 # Load environment variables
 load_dotenv()
 
@@ -26,7 +26,22 @@ def build_prompt(category: str,
                  style: StyleProfile,
                  constraints: Dict,
                  materials: str,
-                 task_scaffold: Optional[str] = None) -> str:
+                 task_scaffold: Optional[str] = None,
+                 time_context: Optional[TimeContext] = None) -> str:
+    
+        # 添加时间上下文到提示词
+    time_hint = ""
+    if time_context:
+        if time_context.intent == "latest":
+            time_hint = f"\n\n时间上下文：用户询问最新信息（截至 {time_context.display_cutoff}）"
+        elif time_context.intent == "trend":
+            time_hint = f"\n\n时间上下文：用户询问趋势分析（{time_context.window[0]} 至 {time_context.window[1]}）"
+        elif time_context.intent == "historic":
+            time_hint = f"\n\n时间上下文：用户询问历史信息（{time_context.window[0]} 至 {time_context.window[1]}）"
+    
+    # 在 materials 中添加时间信息
+    materials = materials + time_hint
+
     # 直接使用 render_synthesizer_prompt 函数
     return render_synthesizer_prompt(
         action_policy=SYNTHESIZER_ACTION_POLICIES.get(category, "Provide helpful and accurate responses."),

@@ -17,6 +17,7 @@ from chasor import ChasorCore
 from toolsets import Toolset
 from config_manager import get_config
 from streaming import stream_response, is_streaming_enabled, get_streaming_format, streaming_output
+from utils.timectx import parse_time_intent
 
 async def run_demo():
     # Load and display configuration
@@ -75,13 +76,13 @@ async def run_demo():
     
     # Demo queries - mix of different types
     queries = [
-        "解释一下为什么会有潮汐？",  # Test query
+        "介绍一下叶玉如校长",  # Test query
     ]
     
     print("[DEMO][START] WebChasor Demo")
     print(f"[DEMO][MODEL] synthesizer={synthesizer.model_name}")
     
-    # 显示流式输出配置
+    # info for streaming output
     streaming_output.print_streaming_info()
     print("=" * 60)
     
@@ -90,38 +91,43 @@ async def run_demo():
         print("-" * 50)
         
         try:
-            # 先路由查询以确定action类型，但只调用一次
+            # route query to determine action type, but only call once
             category_enum = await router.classify("", query)
             category = category_enum.value
             print(f"[DEMO][ROUTE] {category}")
             
-            # 获取action名称
+            # get action name
             action_name = registry.route(category)
             print(f"[DEMO][ACTION] {action_name}")
             
-            # 根据配置和action类型决定执行方式
+            # decide execution mode based on config and action type
             if action_name == "REASONING" and is_streaming_enabled():
-                # 流式输出模式 - 直接调用streaming模块
+                # streaming mode - directly call streaming module
                 print("[DEMO][RESULT] ", end="", flush=True)
                 full_content = await stream_response(query)
                 if full_content and not get_streaming_format() == "openai":
                     print(f"\n[DEMO][FULL_CONTENT] Generated {len(full_content)} characters")
             else:
-                # 常规模式 - 直接调用action，避免ChasorCore的重复路由
+                # normal mode - directly call action, avoid ChasorCore's repeated routing
                 action = registry.get(action_name)
                 if action:
-                    # 创建Context对象
+                    # parse time context
+                    time_context = parse_time_intent(query)
+                    print(f"[DEMO][TIME] intent={time_context.intent}, window={time_context.window}")
+                    
+                    # create Context object
                     ctx = Context(
                         history="", 
                         query=query, 
                         router_category=category, 
-                        hints={}
+                        hints={},
+                        time_context=time_context
                     )
-                    # 直接调用action
+                    # directly call action
                     result = await action.run(ctx, toolset)
                     print(f"[DEMO][RESULT] {result.content}")
                     
-                    # 显示元数据
+                    # show metadata
                     if result.meta:
                         print(f"[DEMO][META] fields={len(result.meta)}")
                         if 'search_results_count' in result.meta:

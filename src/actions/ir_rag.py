@@ -15,7 +15,7 @@ import re
 from urllib.parse import urlparse, urljoin
 from bs4 import BeautifulSoup
 import time
-
+from utils.timectx import TimeContext, parse_time_intent
 from artifacts import Action, Context, Artifact
 from actions.serpapi_search import SerpAPISearch
 from config_manager import get_config
@@ -762,7 +762,7 @@ class IR_RAG(Action):
             print(f"[IR_RAG][PLAN] tasks={len(plan.tasks_to_extract)}")
             
             # Step 2: Retrieval - Search for information
-            search_results = await self._retrieve_information(ctx.query, plan)
+            search_results = await self._retrieve_information(ctx.query, plan, ctx)
             print(f"[IR_RAG][SEARCH] results={search_results}")
             print(f"[IR_RAG][SEARCH] results={len(search_results)}")
             
@@ -800,24 +800,36 @@ class IR_RAG(Action):
             logger.error(f"IR_RAG workflow failed: {e}")
             return self._create_error_artifact(ctx.query, str(e))
     
-    async def _retrieve_information(self, query: str, plan: ExtractionPlan) -> List[SearchResult]:
+    async def _retrieve_information(self, query: str, plan: ExtractionPlan, ctx: Context) -> List[SearchResult]:
         """Retrieve information using configured search provider"""
         
         if self.config.search_provider == RetrievalProvider.SERPAPI:
-            return await self._serpapi_search(query, plan)
+            return await self._serpapi_search(query, plan, ctx)
         elif self.config.search_provider == RetrievalProvider.VECTOR_DB:
             return await self._vector_search(query, plan)
         elif self.config.search_provider == RetrievalProvider.HYBRID:
-            return await self._hybrid_search(query, plan)
+            return await self._hybrid_search(query, plan, ctx)
         else:
             raise ValueError(f"Unsupported search provider: {self.config.search_provider}")
     
-    async def _serpapi_search(self, query: str, plan: ExtractionPlan) -> List[SearchResult]:
+    async def _serpapi_search(self, query: str, plan: ExtractionPlan, ctx: Context) -> List[SearchResult]:
         """Search using SerpAPI"""
         print(f"🔍 IR_RAG: Searching with SerpAPI...")
-        
+
         # Build search query from plan
         search_query = self._build_search_query(query, plan)
+
+        # 只添加时间信息
+        if ctx.time_context:
+            time_ctx = ctx.time_context
+            
+            # 提取日期（去掉时间戳）
+            if time_ctx.window[0]:
+                start_date = time_ctx.window[0].split('T')[0]
+                search_query += f" {start_date}"
+        
+        print(f"🔍 IR_RAG: Search query: {search_query}")
+        print(f"🔍 IR_RAG: Time intent: {ctx.time_context.intent if ctx.time_context else 'None'}")
         
         # Execute search using structured results method
         raw_results = self.search_tool.get_structured_results(
@@ -854,13 +866,13 @@ class IR_RAG(Action):
         
         return []
     
-    async def _hybrid_search(self, query: str, plan: ExtractionPlan) -> List[SearchResult]:
+    async def _hybrid_search(self, query: str, plan: ExtractionPlan, ctx: Context) -> List[SearchResult]:
         """Combine SerpAPI and vector search results"""
         print(f"🔍 IR_RAG: Hybrid search not fully implemented, using SerpAPI only...")
         
         # For now, just use SerpAPI
         # In the future, this would combine results from both sources
-        return await self._serpapi_search(query, plan)
+        return await self._serpapi_search(query, plan, ctx)
     
     def _build_search_query(self, original_query: str, plan: ExtractionPlan) -> str:
         """Build optimized search query from plan"""
@@ -872,9 +884,16 @@ class IR_RAG(Action):
         
         # Extract important terms from task facts
         for task in plan.tasks_to_extract[:3]:  # Use top 3 tasks
-            fact_terms = re.findall(r'\b[A-Z][a-z]+\b', task.fact)
-            key_terms.extend(fact_terms[:2])  # Max 2 terms per task
+                    # 过滤掉常见的英文停用词
+            stop_words = {'what', 'how', 'when', 'where', 'who', 'why', 'is', 'are', 'was', 'were', 'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by'}
         
+            fact_terms = re.findall(r'\b[A-Z][a-z]+\b', task.fact)
+            filtered_terms = [term for term in fact_terms if term.lower() not in stop_words]
+            key_terms.extend(filtered_terms[:2])  # Max 2 terms per task
+            
+            chinese_terms = re.findall(r'[\u4e00-\u9fff]+', task.fact)
+            key_terms.extend(chinese_terms[:2])  # Max 2 Chinese terms per task
+    
         # Combine with original query
         if key_terms:
             search_query = f"{original_query} {' '.join(set(key_terms))}"
@@ -977,6 +996,8 @@ class IR_RAG(Action):
         1. Clear sections based on the information found
         2. Citations using [1], [2], etc. format
         3. Factual accuracy based on the sources
+        4. Time context: {ctx.time_context.intent}. Notice the time context is important. Filter the information based on the time context.
+        5. With a reference list corresponding to the citations.
         """
         
 

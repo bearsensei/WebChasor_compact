@@ -66,7 +66,7 @@ ir_rag:
   
   # Web scraping configuration
   web_scraping:
-    enabled: false                    # Enable web scraping functionality
+    enabled: true                    # Enable web scraping functionality
     max_pages: 5                    # Maximum pages to scrape per request
     parallel_fetch: true            # Enable parallel page fetching
     retry_attempts: 2               # Number of retry attempts
@@ -157,6 +157,8 @@ performance:
   concurrency:
     max_parallel_requests: 5      # Maximum parallel API requests
     max_parallel_web_fetches: 3   # Maximum parallel web fetches
+    max_concurrent_requests: 100  # Global concurrent request limit (Semaphore)
+    llm_concurrent_limit: 20      # LLM concurrent request limit (Semaphore)
   
   # Timeout settings (in seconds)
   timeouts:

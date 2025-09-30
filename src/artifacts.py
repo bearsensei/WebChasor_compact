@@ -2,7 +2,7 @@
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, List
 from toolsets import Toolset
-
+from utils.timectx import TimeContext
 @dataclass
 class Artifact:
     kind: str                      # "text" | "json" | "table" | "image" | "code" | "math"
@@ -15,7 +15,7 @@ class Context:
     query: str
     router_category: str           # set by Router
     hints: Dict = None             # optional; e.g., archetype=biography
-
+    time_context: Optional[TimeContext] = None
 # action base
 class Action:
     name: str = "BASE"
