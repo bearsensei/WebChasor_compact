@@ -29,27 +29,24 @@ def build_prompt(category: str,
                  task_scaffold: Optional[str] = None,
                  time_context: Optional[TimeContext] = None) -> str:
     
-        # 添加时间上下文到提示词
+    # add time context to prompt
     time_hint = ""
     if time_context:
         if time_context.intent == "latest":
-            time_hint = f"\n\n时间上下文：用户询问最新信息（截至 {time_context.display_cutoff}）"
+            time_hint = f"\n\nTime context: user asked for latest information (as of {time_context.display_cutoff})"
         elif time_context.intent == "trend":
-            time_hint = f"\n\n时间上下文：用户询问趋势分析（{time_context.window[0]} 至 {time_context.window[1]}）"
+            time_hint = f"\n\nTime context: user asked for trend analysis ({time_context.window[0]} to {time_context.window[1]})"
         elif time_context.intent == "historic":
-            time_hint = f"\n\n时间上下文：用户询问历史信息（{time_context.window[0]} 至 {time_context.window[1]}）"
+            time_hint = f"\n\nTime context: user asked for historical information ({time_context.window[0]} to {time_context.window[1]})"
     
-    # 在 materials 中添加时间信息
-    materials = materials + time_hint
-
-    # 直接使用 render_synthesizer_prompt 函数
+    materials = materials + time_hint 
     return render_synthesizer_prompt(
         action_policy=SYNTHESIZER_ACTION_POLICIES.get(category, "Provide helpful and accurate responses."),
         materials=materials,
-        user_query=materials,  # 将 materials 作为 user_query 传递用于语言检测
+        user_query=materials,  
         language=constraints.get("language"),
         reading_level=constraints.get("reading_level", "general"),
-        preferred_style=None,  # 让函数自动检测样式
+        preferred_style=None,  
         global_system=SYNTHESIZER_GLOBAL_SYSTEM,
         internal_scaffold=SYNTHESIZER_HIDDEN_REASONING_SCAFFOLD if category == "KNOWLEDGE_REASONING" else (task_scaffold or "")
     )
@@ -121,10 +118,10 @@ class Synthesizer:
             return "I've processed your request according to the specified requirements."
 
     async def generate(self, category, style_key, constraints, materials, task_scaffold=None):
-        # 直接使用 render_synthesizer_prompt，它会自动处理样式选择和语言检测
+        # directly use render_synthesizer_prompt, it will automatically handle style selection and language detection
         
 
-        auto_lang = detect_lang_4way(materials) # 若没有 user_query，可退回 materials
+        auto_lang = detect_lang_4way(materials) # if no user_query, return materials
         print(f'[SYNTHESIZER][LANG_DEBUG] auto_lang: {auto_lang}')
         prompt = render_synthesizer_prompt(
             action_policy=SYNTHESIZER_ACTION_POLICIES.get(category, "Provide helpful and accurate responses."),
@@ -140,7 +137,7 @@ class Synthesizer:
         temperature = 0.0 if category == "TASK_PRODUCTIVITY" else constraints.get("temperature", 0.1)
         print(f"[SYNTHESIZER][EXEC] model={self.model_name} temp={temperature} category={category} lang={auto_lang}")
 
-        # 3) 把渲染后的 prompt 交给模型
+        # pass the rendered prompt to the model
         response = await self.llm(prompt, temperature=temperature)
         return response
             
