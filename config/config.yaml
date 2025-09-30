@@ -324,6 +324,11 @@ router:
   
   strategy: hybrid  # Routing strategy (hybrid, rule-based, llm-based)
 
+# Geographic query configuration
+geo_query:
+  enable_enhancement: true  # Enable LLM-based response enhancement for friendlier output
+  enhancement_temperature: 0.7  # Temperature for enhancement (higher = more creative)
+
 # System-wide configuration
 system:
   debug: true                    # Enable debug mode

@@ -42,7 +42,8 @@ class ActionRegistry:
             "CREATIVE_GENERATION": "CREATIVE",     # Future: Creative content generation
             "MATH_QUERY": "MATH",                  # Future: Mathematical computation
             "MULTIMODAL_QUERY": "MULTIMODAL",      # Future: Image/video processing
-            "CONVERSATIONAL_FOLLOWUP": "RESPONSE"  # Future: Conversational responses
+            "CONVERSATIONAL_FOLLOWUP": "RESPONSE", # Future: Conversational responses
+            "GEO_QUERY": "GEO_QUERY"               # Geographic/location queries
         }
         
         action_name = mapping.get(router_category, "REASONING")

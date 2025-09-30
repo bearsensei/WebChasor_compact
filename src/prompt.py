@@ -1,6 +1,6 @@
 # init prompt
 import json
-SYSTEM_PROMPT_MULTI = '''You are a Web Information Seeking Master. Your task is to thoroughly seek the internet for information and provide accurate answers to questions. No matter how complex the query, you will not give up until you find the corresponding information.
+SYSTEM_PROMPT_GLOBAL = '''You are a Web Information Seeking Master. Your task is to thoroughly seek the internet for information and provide accurate answers to questions. No matter how complex the query, you will not give up until you find the corresponding information.
 
 As you proceed, adhere to the following principles:
 
@@ -307,6 +307,8 @@ Classify the user's latest query by intent using recent conversation context.
 ## CATEGORIES
 - INFORMATION_RETRIEVAL
   → Factual lookup, real-time update, background research, definitions, verification, aggregation, comparisons that require external data.
+- GEO_QUERY
+  → Location-based queries: finding nearby places, getting directions/routes, geographic searches, transit information, distance calculations.
 - CONVERSATIONAL_FOLLOWUP
   → Continuation of the prior discussion: clarifications, opinions, reflections, acknowledgments; no new external facts needed.
 - CREATIVE_GENERATION
@@ -322,12 +324,13 @@ Classify the user's latest query by intent using recent conversation context.
 
 ## TIE-BREAKERS (choose the first that applies)
 1) If the user asks about provided/non-text media (image/PDF/chart) → MULTIMODAL_QUERY.
-2) If the answer requires external facts (news, stats, dates, entity definitions, verification) → INFORMATION_RETRIEVAL.
-3) If only numeric computation from given numbers → MATH_QUERY.
-4) If the user requests summarizing/reformatting/extraction/actionable deliverables → TASK_PRODUCTIVITY.
-5) If the user asks for purely creative writing → CREATIVE_GENERATION.
-6) If the user asks for non-factual "why/how" explanation without external data → KNOWLEDGE_REASONING.
-7) Otherwise (clarify/continue/acknowledge) → CONVERSATIONAL_FOLLOWUP.
+2) If the query involves locations, places, directions, routes, or geographic searches → GEO_QUERY.
+3) If the answer requires external facts (news, stats, dates, entity definitions, verification) → INFORMATION_RETRIEVAL.
+4) If only numeric computation from given numbers → MATH_QUERY.
+5) If the user requests summarizing/reformatting/extraction/actionable deliverables → TASK_PRODUCTIVITY.
+6) If the user asks for purely creative writing → CREATIVE_GENERATION.
+7) If the user asks for non-factual "why/how" explanation without external data → KNOWLEDGE_REASONING.
+8) Otherwise (clarify/continue/acknowledge) → CONVERSATIONAL_FOLLOWUP.
 
 ## EXAMPLES
 ---
@@ -386,6 +389,27 @@ User: Write a 3-line poem about moonlight.
 User: Make it in haiku form.
 [CLASSIFICATION]
 CREATIVE_GENERATION
+---
+[HISTORY]
+
+[CURRENT]
+User: 从北角到钻石山怎么走？
+[CLASSIFICATION]
+GEO_QUERY
+---
+[HISTORY]
+User: I'm at HKUST now.
+[CURRENT]
+User: Find me nearby coffee shops.
+[CLASSIFICATION]
+GEO_QUERY
+---
+[HISTORY]
+User: 将军澳附近有什么餐厅？
+[CURRENT]
+User: 香港科技大学周边的超市有哪些？
+[CLASSIFICATION]
+GEO_QUERY
 
 ## ACTUAL TASK
 [HISTORY]
@@ -427,6 +451,7 @@ SYNTHESIZER_ACTION_POLICIES = {
     "REASONING": "Provide a natural, conversational explanation that flows smoothly. Use the internal reasoning structure but present it as a cohesive, friendly response.",
     "KNOWLEDGE_REASONING": "Provide a natural, conversational explanation that flows smoothly. Use the internal reasoning structure but present it as a cohesive, friendly response.",
     "INFORMATION_RETRIEVAL": "Ground all facts in provided evidence; include citations per house style; attach the reference list to the end of the answer and correspond to the citations.",
+    "GEO_QUERY": "Rewrite geographic route/location information to be friendly and conversational. PRESERVE ALL factual details (addresses, distances, transit lines, durations, station names). Only change the presentation style, never invent new information.",
 }
 
 # Style profiles for different response styles
@@ -848,3 +873,39 @@ def render_synthesizer_prompt(
         materials=materials,
         instruction_hint=instruction_hint or ""
     )
+
+# prompt.py (add at the end of file)
+
+def build_enhancement_instruction(category: str, original_query: str) -> str:
+    """
+    Build instruction hint for response enhancement based on category
+    
+    Args:
+        category: Router category (e.g., GEO_QUERY, INFORMATION_RETRIEVAL)
+        original_query: User's original query
+        
+    Returns:
+        Enhancement instruction for synthesizer
+    """
+    instructions = {
+        "GEO_QUERY": f"""
+Please rewrite the following route information into a friendly, natural conversational response:
+1. Start with a friendly greeting addressing the user's question: "{original_query}"
+2. Clearly summarize key information (duration, distance, number of transfers)
+3. Present route steps in an easy-to-follow format
+4. Add one practical tip if relevant
+5. End with a warm closing (e.g., "Have a safe journey!")
+Keep it concise (150-200 characters) and conversational.
+""",
+        
+        "INFORMATION_RETRIEVAL": f"""
+Please rewrite the following information into a well-structured, friendly response:
+1. Organize information logically
+2. Use headings or bullet points where appropriate
+3. Maintain a professional but conversational tone
+4. Highlight key facts
+5. Preserve all citations and sources
+""",
+    }
+    
+    return instructions.get(category, "")

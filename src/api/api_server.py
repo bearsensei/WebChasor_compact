@@ -31,6 +31,7 @@ from router import Router
 from actions.productivity import PRODUCTIVITY
 from actions.reasoning import REASONING
 from actions.ir_rag import IR_RAG
+from actions.geo_query import GEO_QUERY
 from toolsets import Toolset
 from config_manager import get_config, get_global_gate, get_llm_gate
 # 按你现有目录结构保留 import；此处未直接调用，但保留兼容性
@@ -93,6 +94,7 @@ class WebChasorService:
         else:
             print("[SERVICE] No API credentials, using fallback")
         ir_rag_action = IR_RAG(llm_client=llm_client)
+        geo_query_action = GEO_QUERY()  # Will read GOOGLE_MAP_KEY from env
         # Create registry and register actions
         self.registry = ActionRegistry()
         self.registry._reg = {
@@ -100,6 +102,7 @@ class WebChasorService:
             "REASONING": reasoning_action,
             "IR_RAG": ir_rag_action,
             "INFORMATION_RETRIEVAL": ir_rag_action,
+            "GEO_QUERY": geo_query_action,
         }
         self.initialized = True
         print("[SERVICE] WebChasor service initialized successfully")
@@ -332,26 +335,30 @@ async def generate_openai_compatible_stream(request: ChatCompletionRequest):
         return
 
     try:
-        print(f"[DEBUG] 真正的并行执行：思考过程和主查询同时进行...")
+        print(f"[API][STREAM] Starting parallel execution: thinking + main query...")
         # 立即启动主查询任务（真正的并行）
-        print(f"[DEBUG] 启动主查询任务...")
+        print(f"[API][STREAM] Starting main query task...")
         main_task = asyncio.create_task(webchasor_service.execute_query(user_message))
         # 同时启动思考过程，实时输出（独立协程生成器）
-        print(f"[DEBUG] 开始实时输出思考过程...")
+        print(f"[API][STREAM] Streaming thinking process...")
         async for thinking_chunk in thinking_stream_sse(user_message, request.model):
             yield thinking_chunk
             # 期间非阻塞检查主查询是否完成（无需中断思考）
             # if main_task.done(): pass  # 可加日志
 
-        print(f"[DEBUG] 思考过程输出完成")
+        print(f"[API][STREAM] Thinking process completed")
 
         # 等待主查询完成（如果还没完成的话）
         if not main_task.done():
-            print(f"[DEBUG] 等待主查询完成...")
+            print(f"[API][STREAM] Waiting for main query completion...")
         result = await main_task
 
         content = format_content_for_chatbox(result["content"])
-        print(f"[DEBUG] 开始输出答案...")
+        action_name = result.get("action", "UNKNOWN")
+        category = result.get("category", "UNKNOWN")
+        
+        print(f"[API][STREAM] Category={category}, Action={action_name}")
+        print(f"[API][STREAM] Streaming answer (length={len(content)})...")
 
         # 流式输出答案
         chunk_size = 60

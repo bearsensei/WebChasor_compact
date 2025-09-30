@@ -194,7 +194,7 @@ class IntegratedGeoTool:
         response = requests.post(self.routes_base_url, headers=headers, json=data)
         return response.json()
     
-    def get_transit_route_by_address(self, origin_address, dest_address, routing_preference="LESS_WALKING", allowed_modes=None):
+    def get_transit_route_by_address(self, origin_address, dest_address, routing_preference=None, allowed_modes=None):
         """Get the fastest transit route between two addresses"""
         if allowed_modes is None:
             allowed_modes = ["TRAIN", "BUS", "SUBWAY"]
@@ -320,13 +320,13 @@ class IntegratedGeoTool:
             print("No transit route found")
             return
         
-        print(f"\n{'='*60}")
-        print(f"BEST TRANSIT ROUTE: {origin_address} → {dest_address}")
-        print(f"{'='*60}")
+        #print(f"\n{'='*60}")
+        #print(f"BEST TRANSIT ROUTE: {origin_address} → {dest_address}")
+        #print(f"{'='*60}")
         
-        print(f"Total distance: {route_info['distance_km']:.2f}km")
-        print(f"Total time: {route_info['duration_minutes']}min {route_info['duration_seconds']%60}sec")
-        print(f"Transit steps: {len(route_info['steps'])}")
+        #print(f"Total distance: {route_info['distance_km']:.2f}km")
+        #print(f"Total time: {route_info['duration_minutes']}min {route_info['duration_seconds']%60}sec")
+        #print(f"Transit steps: {len(route_info['steps'])}")
         
         if route_info['steps']:
             print(f"\nTransit Details:")
@@ -489,11 +489,11 @@ class IntegratedGeoTool:
                     print(f"   Route time: {route_info['duration_minutes']}min {route_info['duration_seconds']%60}sec")
                     
                     # Create individual map for this route
-                    if route_info['coordinates']:
-                        map_filename = f"output/maps/route_to_{name.replace(' ', '_').replace('/', '_')}.html"
-                        if self.create_route_map_html(route_info['coordinates'], center_place, name, map_filename):
-                            print(f"   Route map: {map_filename}")
-                    
+                    # if route_info['coordinates']:
+                    #    map_filename = f"output/maps/route_to_{name.replace(' ', '_').replace('/', '_')}.html"
+                    #    if self.create_route_map_html(route_info['coordinates'], center_place, name, map_filename):
+                    #        print(f"   Route map: {map_filename}")
+                    map_filename = None
                     results.append({
                         'place': place,
                         'route_info': route_info,
@@ -552,7 +552,7 @@ class IntegratedGeoTool:
     
     def get_best_transit_route(self, origin_address, dest_address, routing_preference="LESS_WALKING", allowed_modes=None):
         """Get the best (fastest) transit route between two addresses"""
-        print(f"=== Getting best transit route from {origin_address} to {dest_address} ===")
+        print(f"[GEO_TOOL] Getting transit route from {origin_address} to {dest_address}")
         
         # Get transit route data
         route_data = self.get_transit_route_by_address(
@@ -565,20 +565,20 @@ class IntegratedGeoTool:
         # Analyze the best route
         route_info = self.analyze_transit_route(route_data)
         
-        if route_info:
-            # Print simplified information
-            self.print_transit_details(route_info, origin_address, dest_address)
+        # if route_info:
+            # Silent mode: don't print details here, let the caller format the output
+            # self.print_transit_details(route_info, origin_address, dest_address)
             
             # Create map for the best route
-            if route_info['coordinates']:
-                map_filename = f"output/maps/best_transit_route_{origin_address.replace(' ', '_')}_to_{dest_address.replace(' ', '_')}.html"
-                if self.create_route_map_html(
-                    route_info['coordinates'], 
-                    origin_address, 
-                    dest_address, 
-                    map_filename
-                ):
-                    print(f"Route map created: {map_filename}")
+            #if route_info['coordinates']:
+            #    map_filename = f"output/maps/best_transit_route_{origin_address.replace(' ', '_')}_to_{dest_address.replace(' ', '_')}.html"
+            #    if self.create_route_map_html(
+            #        route_info['coordinates'], 
+            #        origin_address, 
+            #        dest_address, 
+            #        map_filename
+            #    ):
+            #        print(f"[GEO_TOOL] Route map created: {map_filename}")
         
         return route_info
     
@@ -644,15 +644,15 @@ class IntegratedGeoTool:
             print(f"Time: {route_info['duration_minutes']}min {route_info['duration_seconds']%60}sec")
             
             # Create map for driving route
-            if route_info['coordinates']:
-                map_filename = f"output/maps/driving_route_{origin_address.replace(' ', '_')}_to_{dest_address.replace(' ', '_')}.html"
-                if self.create_route_map_html(
-                    route_info['coordinates'], 
-                    origin_address, 
-                    dest_address, 
-                    map_filename
-                ):
-                    print(f"Driving route map created: {map_filename}")
+            # if route_info['coordinates']:
+            #    map_filename = f"output/maps/driving_route_{origin_address.replace(' ', '_')}_to_{dest_address.replace(' ', '_')}.html"
+            #    if self.create_route_map_html(
+            #        route_info['coordinates'], 
+            #        origin_address, 
+            #        dest_address, 
+            #        map_filename
+            #    ):
+            #        print(f"Driving route map created: {map_filename}")
         
         return route_info
 

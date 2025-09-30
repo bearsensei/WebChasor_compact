@@ -13,11 +13,13 @@ from router import Router  # Use Router instead of SimpleRouter
 from actions.productivity import PRODUCTIVITY
 from actions.reasoning import REASONING
 from actions.ir_rag import IR_RAG, IRConfig
+from actions.geo_query import GEO_QUERY
 from chasor import ChasorCore
 from toolsets import Toolset
 from config_manager import get_config
 from streaming import stream_response, is_streaming_enabled, get_streaming_format, streaming_output
 from utils.timectx import parse_time_intent
+from prompt import build_enhancement_instruction
 
 async def run_demo():
     # Load and display configuration
@@ -56,6 +58,7 @@ async def run_demo():
     
     # IR_RAG will auto-configure from YAML
     ir_rag_action = IR_RAG(llm_client=llm_client)
+    geo_query_action = GEO_QUERY()  # Will read GOOGLE_MAP_KEY from env
     
     # Create registry and register actions
     registry = ActionRegistry()
@@ -64,6 +67,7 @@ async def run_demo():
         "REASONING": reasoning_action,
         "IR_RAG": ir_rag_action,
         "INFORMATION_RETRIEVAL": ir_rag_action,  # Map router category to action
+        "GEO_QUERY": geo_query_action,
     }
     
     # Initialize ChasorCore with correct parameters
@@ -76,7 +80,7 @@ async def run_demo():
     
     # Demo queries - mix of different types
     queries = [
-        "介绍一下叶玉如校长",  # Test query
+        "从港科大到坚尼地城怎么走",  # Test query
     ]
     
     print("[DEMO][START] WebChasor Demo")
@@ -107,6 +111,7 @@ async def run_demo():
                 full_content = await stream_response(query)
                 if full_content and not get_streaming_format() == "openai":
                     print(f"\n[DEMO][FULL_CONTENT] Generated {len(full_content)} characters")
+            
             else:
                 # normal mode - directly call action, avoid ChasorCore's repeated routing
                 action = registry.get(action_name)
