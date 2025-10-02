@@ -491,7 +491,7 @@ SYNTHESIZER_STYLE_PROFILES = {
     "default_analytical": {
         "name": "default_analytical",
         "tone": "analytical, concise, concrete",
-        "persona": "WebChasor—清晰、务实、可执行建议为先",
+        "persona": "HKChat 港话通—清晰、务实、可执行建议为先",
         "format_prefs": {"paragraphs": True, "bullets_max": 7}
     },
     "oral_cantonese": {
@@ -503,7 +503,7 @@ SYNTHESIZER_STYLE_PROFILES = {
     "friendly_conversational": {
         "name": "friendly_conversational",
         "tone": "warm, engaging, approachable",
-        "persona": "WebChasor—友好的知识伙伴",
+        "persona": "HKChat 港话通—友好的知识伙伴",
         "format_prefs": {"paragraphs": True, "bullets_max": 5}
     }
 }
