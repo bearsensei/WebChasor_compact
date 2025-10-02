@@ -253,13 +253,23 @@ class Router:
         return math_ratio > 0.8
     
     def _apply_obvious_heuristics(self, query: str, has_media: bool) -> Optional[Tuple[str, float]]:
-        """Apply heuristics only for very obvious cases (math, multimodal)"""
+        """Apply heuristics only for very obvious cases (math, multimodal, identity)"""
         
-        # 1) Media detection - very obvious
+        # 1) Identity questions - very obvious (supports Chinese, Cantonese, English)
+        query_lower = query.lower().strip()
+        # Pattern 1: identity question + AI keywords
+        identity_with_ai = r'(你是不是|你是|你是谁|你是什么|你的身份|你的名字|你叫什么|你係咪|你係唔係|你係邊個|你叫咩名|are you|who are you|what are you).*(openai|gpt|chatgpt|claude|assistant|ai|人工智能|机器人)'
+        # Pattern 2: pure identity question
+        pure_identity = r'^(你是谁|你係邊個|你叫咩名|你叫什么名|who are you|what are you)\??$'
+        
+        if re.search(identity_with_ai, query_lower) or re.search(pure_identity, query_lower):
+            return QueryCategory.CONVERSATIONAL_FOLLOWUP.value, 0.98
+        
+        # 2) Media detection - very obvious
         if has_media:
             return QueryCategory.MULTIMODAL_QUERY.value, 0.99
         
-        # 2) Math detection - very obvious mathematical expressions
+        # 3) Math detection - very obvious mathematical expressions
         if self._looks_like_obvious_math(query):
             return QueryCategory.MATH_QUERY.value, 0.98
         
@@ -323,6 +333,10 @@ class Router:
         
         features = self._extract_features(query, last_assistant_turn)
         
+        # Priority 1: Identity questions should be conversational
+        if features['identity_indicators'] > 0:
+            return QueryCategory.CONVERSATIONAL_FOLLOWUP.value, 0.95
+        
         # Enhanced rule-based classification with hybrid query detection
         
         # Detect hybrid queries (IR + REASONING)
@@ -365,11 +379,17 @@ class Router:
     
     def _extract_features(self, query: str, last_assistant_turn: str) -> Dict[str, int]:
         """Extract features for lightweight classification"""
-        query_lower = query.lower()
+        query_lower = query.lower().strip()
+        
+        # Check for identity questions first (supports Chinese, Cantonese, English)
+        identity_with_ai = r'(你是不是|你是|你是谁|你是什么|你的身份|你的名字|你叫什么|你係咪|你係唔係|你係邊個|你叫咩名|are you|who are you|what are you).*(openai|gpt|chatgpt|claude|assistant|ai|人工智能|机器人)'
+        pure_identity = r'^(你是谁|你係邊個|你叫咩名|你叫什么名|who are you|what are you)\??$'
+        is_identity_question = bool(re.search(identity_with_ai, query_lower) or re.search(pure_identity, query_lower))
         
         features = {
             'question_words': len(re.findall(r'\b(what|when|where|who|how|why)\b', query_lower)),
-            'external_indicators': len(re.findall(r'\b(current|latest|search|find|weather|news|recent|trend|data|statistics|report|study|case|pilot|official|policy|industry|market|economic|financial|demographic|population|pandemic|government|regulatory|technology|AI|artificial intelligence|CBDC|digital currency)\b', query_lower)),
+            'external_indicators': len(re.findall(r'\b(current|latest|search|find|weather|news|recent|trend|data|statistics|report|study|case|pilot|official|policy|industry|market|economic|financial|demographic|population|pandemic|government|regulatory|technology|CBDC|digital currency)\b', query_lower)),
+            'identity_indicators': 1 if is_identity_question else 0,
             'math_indicators': len(re.findall(r'\b(calculate|solve|math|number|\d+)\b', query_lower)),
             'task_indicators': len(re.findall(r'\b(write|create|format|organize|list)\b', query_lower)),
             'creative_indicators': len(re.findall(r'\b(story|poem|creative|imagine|roleplay)\b', query_lower)),

@@ -13,11 +13,13 @@ import time
 import uuid
 import random
 from dotenv import load_dotenv
-from utils.timectx import parse_time_intent
+
 # Load environment variables from .env file
 load_dotenv()
 # Add the project root to Python path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from utils.timectx import parse_time_intent
 
 from fastapi import FastAPI, HTTPException, Header
 from fastapi.responses import StreamingResponse
@@ -280,6 +282,7 @@ async def thinking_stream_sse(query: str, request_model: str):
                             "finish_reason": None
                         }]
                     }
+                    await asyncio.sleep(0.02)
                     yield f"data: {json.dumps(proxy, ensure_ascii=False)}\n\n"
         except Exception as e:
             print(f"[API][ERROR] ThinkingPlan generation failed: {e}")

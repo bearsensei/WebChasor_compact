@@ -26,6 +26,40 @@ def _ratio_hant_hans(text: str):
     total = hans + hant
     return (hant / total if total else 0.0, hans / total if total else 0.0)
 
+def _detect_european_lang(text: str) -> str:
+    """Detect specific European languages by common words/patterns"""
+    text_lower = text.lower()
+    
+    # German indicators
+    german_words = ['ich', 'und', 'der', 'die', 'das', 'ist', 'nicht', 'ein', 'eine', 'haben', 'sein', 'werden', 'können', 'machen', 'wie', 'was', 'wo', 'wann', 'warum', 'wer']
+    german_chars = ['ä', 'ö', 'ü', 'ß']
+    
+    # French indicators
+    french_words = ['je', 'tu', 'il', 'elle', 'nous', 'vous', 'ils', 'elles', 'le', 'la', 'les', 'un', 'une', 'est', 'sont', 'avoir', 'être', 'faire', 'comment', 'quoi', 'où', 'quand', 'pourquoi', 'qui']
+    french_chars = ['é', 'è', 'ê', 'à', 'ù', 'ç', 'œ']
+    
+    # Spanish indicators
+    spanish_words = ['yo', 'tú', 'él', 'ella', 'nosotros', 'vosotros', 'ellos', 'ellas', 'el', 'la', 'los', 'las', 'un', 'una', 'es', 'son', 'estar', 'ser', 'hacer', 'cómo', 'qué', 'dónde', 'cuándo', 'por qué', 'quién']
+    spanish_chars = ['á', 'é', 'í', 'ó', 'ú', 'ñ', '¿', '¡']
+    
+    # Italian indicators
+    italian_words = ['io', 'tu', 'lui', 'lei', 'noi', 'voi', 'loro', 'il', 'lo', 'la', 'i', 'gli', 'le', 'un', 'uno', 'una', 'è', 'sono', 'avere', 'essere', 'fare', 'come', 'cosa', 'dove', 'quando', 'perché', 'chi']
+    italian_chars = ['à', 'è', 'é', 'ì', 'ò', 'ù']
+    
+    # Count matches (use words as stronger signal than special chars)
+    scores = {
+        'de': sum(3 for w in german_words if f' {w} ' in f' {text_lower} ') + sum(1 for c in german_chars if c in text_lower),
+        'fr': sum(3 for w in french_words if f' {w} ' in f' {text_lower} ') + sum(1 for c in french_chars if c in text_lower),
+        'es': sum(3 for w in spanish_words if f' {w} ' in f' {text_lower} ') + sum(1 for c in spanish_chars if c in text_lower),
+        'it': sum(3 for w in italian_words if f' {w} ' in f' {text_lower} ') + sum(1 for c in italian_chars if c in text_lower),
+    }
+    
+    max_score = max(scores.values())
+    if max_score >= 3:  # At least one word match or 3 special chars
+        return max(scores, key=scores.get)
+    
+    return "en"  # Default to English for other Latin-script languages
+
 def _is_ascii_english(text: str):
     letters = sum(1 for ch in text if 'A' <= ch <= 'Z' or 'a' <= ch <= 'z')
     cjk = sum(1 for ch in text if unicodedata.name(ch, "").startswith(("CJK UNIFIED", "CJK COMPATIBILITY")))
@@ -36,9 +70,9 @@ def detect_lang_4way(query: str) -> str:
     if not q:
         return "zh-Hans"  # 默认回退
 
-    # 英文优先判定（纯英文或英文占主导且无CJK）
+    # Latin script language detection (English, German, French, Spanish, Italian, etc.)
     if _is_ascii_english(q):
-        return "en"
+        return _detect_european_lang(q)
 
     # 简繁粗判
     hant_ratio, hans_ratio = _ratio_hant_hans(q)

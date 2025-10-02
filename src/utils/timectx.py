@@ -37,7 +37,7 @@ def parse_time_intent(query: str, tz: str="Asia/Hong_Kong") -> TimeContext:
     elif any(k in ql for k in ["past 30 days","过去30天","last month","上个月"]):
         intent="trend"; gran="day"; start=now - timedelta(days=30)
     elif any(k in ql for k in ["this year","今年","ytd","本年度"]):
-        intent="trend"; gran="month"; start=now.replace(month=1, day=1, hour=0, minute=0, second=0)
+        intent="latest"; gran="month"; start=now.replace(month=1, day=1, hour=0, minute=0, second=0)
     elif any(k in ql for k in ["yesterday","昨天"]):
         intent="historic"; gran="day"
         start = (now - timedelta(days=1)).replace(hour=0, minute=0, second=0)

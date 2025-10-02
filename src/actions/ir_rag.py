@@ -18,6 +18,7 @@ import time
 from utils.timectx import TimeContext, parse_time_intent
 from artifacts import Action, Context, Artifact
 from actions.serpapi_search import SerpAPISearch
+from actions.querymaker import QueryMaker
 from config_manager import get_config
 
 # Setup logging
@@ -181,7 +182,7 @@ class Planner:
             
             plan_text = response.choices[0].message.content.strip()
             finish_reason = response.choices[0].finish_reason
-            
+
             # Check if response was truncated
             if finish_reason == 'length':
                 logger.warning(f"Planner response was truncated (finish_reason=length), may cause JSON parse error")
@@ -729,6 +730,7 @@ class IR_RAG(Action):
         extractor_model = cfg.get('models.extractor.model_name', 'gpt-3.5-turbo')
         
         self.planner = Planner(llm_client, planner_model)
+        self.querymaker = QueryMaker()
         self.search_tool = SerpAPISearch()
         self.visitor = WebVisitor(self.config)
         self.ranker = ContentRanker(self.config)
@@ -827,49 +829,59 @@ class IR_RAG(Action):
             raise ValueError(f"Unsupported search provider: {self.config.search_provider}")
     
     async def _serpapi_search(self, query: str, plan: ExtractionPlan, ctx: Context) -> List[SearchResult]:
-        """Search using SerpAPI"""
+        """Search using SerpAPI with multiple diverse queries"""
         print(f"🔍 IR_RAG: Searching with SerpAPI...")
 
-        # Build search query from plan
-        search_query = self._build_search_query(query, plan, ctx)
-
-        # Only add time context if available
-        if ctx.time_context:
-            time_ctx = ctx.time_context
-            
-            # 提取日期（去掉时间戳）
-            if time_ctx.window[0]:
-                start_date = time_ctx.window[0].split('T')[0]
-                search_query += f" {start_date}"
+        # Build multiple search queries from plan
+        search_queries = self._build_search_query(query, plan, ctx)
         
-        print(f"🔍 IR_RAG: Search query: {search_query}")
+        print(f"🔍 IR_RAG: Generated {len(search_queries)} search queries:")
+        for i, q in enumerate(search_queries, 1):
+            print(f"  {i}. {q}")
         print(f"🔍 IR_RAG: Time intent: {ctx.time_context.intent if ctx.time_context else 'None'}")
         
-        # Execute search using structured results method
-        raw_results = self.search_tool.get_structured_results(
-            query=search_query,
-            num_results=self.config.max_search_results,
-            location=self.config.search_location,
-            language=self.config.search_language
-        )
+        # Execute search for each query and collect results
+        all_search_results = []
+        seen_urls = set()  # Deduplicate by URL
         
-        # Convert raw results to SearchResult objects
-        search_results = []
-        for result in raw_results:
-            search_result = SearchResult(
-                title=result.get('title', ''),
-                snippet=result.get('snippet', ''),  # Now we properly get snippets!
-                url=result.get('link', ''),
-                source=result.get('source', ''),
-                result_type=result.get('type', 'organic'),
-                position=result.get('position', 0),
-                date=result.get('date'),
-                confidence=0.8  # Default confidence for SerpAPI results
-            )
-            search_results.append(search_result)
+        for search_query in search_queries:
+            try:
+                # Execute search using structured results method
+                raw_results = self.search_tool.get_structured_results(
+                    query=search_query,
+                    num_results=self.config.max_search_results,
+                    location=self.config.search_location,
+                    language=self.config.search_language
+                )
+                
+                # Convert raw results to SearchResult objects and deduplicate
+                for result in raw_results:
+                    url = result.get('link', '')
+                    
+                    # Skip if we've already seen this URL
+                    if url in seen_urls:
+                        continue
+                    
+                    seen_urls.add(url)
+                    
+                    search_result = SearchResult(
+                        title=result.get('title', ''),
+                        snippet=result.get('snippet', ''),
+                        url=url,
+                        source=result.get('source', ''),
+                        result_type=result.get('type', 'organic'),
+                        position=result.get('position', 0),
+                        date=result.get('date'),
+                        confidence=0.8  # Default confidence for SerpAPI results
+                    )
+                    all_search_results.append(search_result)
+            
+            except Exception as e:
+                logger.error(f"[IR_RAG][SEARCH] Error searching with query '{search_query}': {e}")
+                continue
         
-        print(f"🔍 IR_RAG: Retrieved {len(search_results)} structured results from SerpAPI")
-        return search_results
+        print(f"🔍 IR_RAG: Retrieved {len(all_search_results)} unique results from {len(search_queries)} queries")
+        return all_search_results
     
     async def _vector_search(self, query: str, plan: ExtractionPlan) -> List[SearchResult]:
         """Search using vector database (placeholder)"""
@@ -888,37 +900,27 @@ class IR_RAG(Action):
         # In the future, this would combine results from both sources
         return await self._serpapi_search(query, plan, ctx)
     
-    def _build_search_query(self, original_query: str, plan: ExtractionPlan, ctx: Context) -> str:
-        """Build optimized search query from plan"""
-        # Extract key terms from tasks
-        key_terms = []
+    def _build_search_query(self, original_query: str, plan: ExtractionPlan, ctx: Context) -> List[str]:
+        """
+        Build optimized search queries using LLM-based QueryMaker.
         
-        if plan.entity:
-            key_terms.append(plan.entity)
-        if ctx.time_context and ctx.time_context.window[0]:
-            start_date = ctx.time_context.window[0].split('T')[0]
-            key_terms.append(start_date)
+        Args:
+            original_query: User's original query
+            plan: Extraction plan from planner
+            ctx: Context with time and other information
             
-        # Extract important terms from task facts
-        # for task in plan.tasks_to_extract[:3]:  # Use top 3 tasks
-                    # 过滤掉常见的英文停用词
-            # stop_words = {'what', 'how', 'when', 'where', 'who', 'why', 'is', 'are', 'was', 'were', 'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by'}
-        
-            # fact_terms = re.findall(r'\b[A-Z][a-z]+\b', task.fact)
-            # filtered_terms = [term for term in fact_terms if term.lower() not in stop_words]
-            # key_terms.extend(filtered_terms[:2])  # Max 2 terms per task
-            
-            # chinese_terms = re.findall(r'[\u4e00-\u9fff]+', task.fact)
-            # key_terms.extend(chinese_terms[:2])  # Max 2 Chinese terms per task
-    
-        # Combine with original query
-        if key_terms:
-            search_query = f"{original_query} {' '.join(set(key_terms))}"
-        else:
-            search_query = original_query
-        
-        # 简化了
-        return search_query[:200]  # Limit query length
+        Returns:
+            List of diverse search queries
+        """
+        try:
+            # Use QueryMaker to generate diverse queries
+            queries = self.querymaker.generate_queries(original_query, ctx)
+            logger.info(f"[IR_RAG][QUERY] Generated {len(queries)} search queries")
+            return queries
+        except Exception as e:
+            logger.error(f"[IR_RAG][QUERY] QueryMaker failed: {e}, using fallback")
+            # Fallback to original query
+            return [original_query]
     
     def _parse_serpapi_results(self, raw_results: str, query: str) -> List[SearchResult]:
         """Parse SerpAPI formatted results into structured format"""
@@ -1005,7 +1007,7 @@ class IR_RAG(Action):
         
         # Create synthesis prompt
         synthesis_prompt = f"""
-        Based on the extracted information, provide a comprehensive answer to: {ctx.query}
+        Based on the extracted information, provide a comprehensive answer to: {ctx.query}.MUST use all retrieved information, no missing information. Be as comprehensive as possible. Add background information if there is any possible.
         
         Use the following extracted information:
         {materials}
@@ -1016,6 +1018,7 @@ class IR_RAG(Action):
         3. Factual accuracy based on the sources
         4. Time context: {ctx.time_context.intent}. Notice the time context is important. Filter the information based on the time context.
         5. With a reference list and urls corresponding to the citations.
+        6. MUST use all retrieved information, no missing information.
         """
         
 
@@ -1066,16 +1069,20 @@ class IR_RAG(Action):
                                  search_results: List[SearchResult]) -> str:
         """Build materials string for synthesis"""
         materials = []
+        citation_counter = 1
         
-        # Add extracted variables
+        # Add extracted variables with numbered citations
         for var_name, var_data in extracted_vars.items():
             if var_data.value and var_data.confidence > 0.3:
-                materials.append(f"**{var_name}**: {var_data.value} (confidence: {var_data.confidence:.2f})")
+                # Use numbered citation instead of variable name
+                materials.append(f"[{citation_counter}] **{var_name}**: {var_data.value}")
+                citation_counter += 1
         
-        # Add high-confidence search results
-        for i, result in enumerate(search_results[:3], 1):
+        # Add high-confidence search results (continue numbering)
+        for result in search_results[:3]:
             if result.snippet:
-                materials.append(f"[{i}] {result.title}: {result.snippet}")
+                materials.append(f"[{citation_counter}] {result.title}: {result.snippet}")
+                citation_counter += 1
         
         return "\n\n".join(materials)
     

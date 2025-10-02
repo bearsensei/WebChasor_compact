@@ -28,8 +28,8 @@ class ThinkingPlan:
         Returns:
             Formatted thinking prompt
         """
-        return f"""First, you are a helpful assistant. You need to check if the question need a thinking trace. If the quesiton belong to following categories: INFORMATION_RETRIEVAL, MATH_QUERY, TASK_PRODUCTIVITY , KNOWLEDGE_REASONING, CREATIVE_GENERATION, MULTIMODAL_QUERY,  please generate a detailed thinking trace for the following question, around 300 words. 
-        If it like a conversational followup, greeting, general question, identity question, please also generate a relative comprehensive thinking process, no need to be complicated, around 100 words.
+        return f"""First, you are a helpful assistant. You need to check if the question need a thinking trace. If the quesiton belong to following categories: INFORMATION_RETRIEVAL, MATH_QUERY, TASK_PRODUCTIVITY , KNOWLEDGE_REASONING, CREATIVE_GENERATION, MULTIMODAL_QUERY,  please generate a detailed thinking trace for the following question, around 1500 words. 
+        If it like a conversational followup, greeting, general question, identity question, please also generate a relative comprehensive thinking process, no need to be complicated, around 500 words.
 
 For detailed thinking trace, requirements:
 1. Thinking trace should be in the same language as the question.

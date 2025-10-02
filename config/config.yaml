@@ -52,7 +52,7 @@ ir_rag:
     engine: google           # Search engine to use
     language: zh-cn         # Search language (Chinese Simplified)
     location: Hong Kong     # Geographic location for search
-    max_results: 10        # Maximum search results to return
+    max_results: 20        # Maximum search results to return
     provider: serpapi       # Search API provider
     safe_search: true      # Enable safe search filtering
   
@@ -111,7 +111,7 @@ models:
     max_tokens: 3000            # Maximum tokens for planning (increased for complex plans)
     model_name: gpt-oss-20b           # Model name for planning
     provider: openai            # Model provider
-    temperature: 0.1            # Low temperature for consistent planning (JSON generation)
+    temperature: 0.8            # Low temperature for consistent planning (JSON generation)
   
   # Request routing model
   router:
@@ -127,15 +127,15 @@ models:
     max_tokens: 50000             # Maximum tokens for synthesis (optimized for detailed answers)
     model_name: gpt-oss-120b           # Model name for synthesis
     provider: openai            # Model provider
-    temperature: 0.5             # Balanced temperature for natural, detailed responses
+    temperature: 0.8             # Balanced temperature for natural, detailed responses
   
   # Reasoning analysis model
   reasoning:
     fallback_enabled: true       # Enable fallback mechanisms
-    max_tokens: 8000            # Maximum tokens for detailed reasoning
+    max_tokens: 50000            # Maximum tokens for detailed reasoning
     model_name: gpt-oss-20b           # Model name for reasoning
     provider: openai            # Model provider
-    temperature: 0.5            # Balanced temperature for natural, detailed reasoning
+    temperature: 0.7            # Balanced temperature for natural, detailed reasoning
   
   # Productivity task model
   productivity:
@@ -144,6 +144,15 @@ models:
     model_name: gpt-oss-20b   # Model name for productivity
     provider: openai            # Model provider
     temperature: 0.0            # Deterministic output for productivity
+  
+  # Query generation model
+  querymaker:
+    fallback_enabled: true       # Enable fallback mechanisms
+    max_tokens: 2000             # Maximum tokens for query generation
+    model_name: gpt-oss-20b     # Model name for query generation
+    provider: openai            # Model provider
+    temperature: 0.8            # Higher temperature for diverse queries
+    num_queries: 5              # Number of diverse queries to generate
 
 # Performance and optimization settings
 performance:
@@ -327,7 +336,7 @@ router:
 # Geographic query configuration
 geo_query:
   enable_enhancement: true  # Enable LLM-based response enhancement for friendlier output
-  enhancement_temperature: 0.7  # Temperature for enhancement (higher = more creative)
+  enhancement_temperature: 0.2  # Temperature for enhancement (higher = more creative)
 
 # System-wide configuration
 system:

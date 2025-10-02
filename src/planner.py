@@ -29,7 +29,7 @@ client = openai.OpenAI(api_key=OPENAI_API_KEY_AGENT, base_url=OPENAI_API_BASE)
 
 # init planner
 
-USER_INPUT = "如何评价今年香港施政报告？"
+USER_INPUT = "郭毅可什么时候可以当浸会大学校长？"
 
 time_start = time.time()
 response = client.chat.completions.create(
