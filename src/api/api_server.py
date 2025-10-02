@@ -36,6 +36,7 @@ from toolsets import Toolset
 from config_manager import get_config, get_global_gate, get_llm_gate
 # 按你现有目录结构保留 import；此处未直接调用，但保留兼容性
 from utils.thinking_coordinator import coordinate_unified_response  # noqa: F401
+from utils.thinking_planner import ThinkingPlan
 
 class Message(BaseModel):
     """消息模型"""
@@ -199,7 +200,7 @@ async def thinking_stream_sse(query: str, request_model: str):
     api_key = os.getenv("OPENAI_API_KEY_AGENT")
     model = cfg.get('models.synthesizer.model_name', 'gpt-4')
 
-    # 1) 输出 <think> 起始标签
+    # 1) 输出 <think> 起始标签（第一个 chunk 需要包含 role）
     start_chunk = {
         "id": f"chatcmpl-{uuid.uuid4().hex[:8]}",
         "object": "chat.completion.chunk",
@@ -207,7 +208,10 @@ async def thinking_stream_sse(query: str, request_model: str):
         "model": request_model,
         "choices": [{
             "index": 0,
-            "delta": {"content": "<think>\n"},
+            "delta": {
+                "role": "assistant",
+                "content": "<think>\n"
+            },
             "finish_reason": None
         }]
     }
@@ -239,29 +243,24 @@ async def thinking_stream_sse(query: str, request_model: str):
             yield f"data: {json.dumps(chunk_data, ensure_ascii=False)}\n\n"
             await asyncio.sleep(0.03)
     else:
-        # 有 key：用 OpenAI 流式生成思考（不带最终答案）
+        # 有 key：使用 ThinkingPlan 生成思考过程
         try:
+            # Use ThinkingPlan static methods for prompt building
             import openai
             client = openai.OpenAI(api_key=api_key, base_url=api_base)
-            thinking_prompt = f"""Please generate a detailed thinking process for the following question. Requirements:
-1. Analyze key elements of the problem
-2. Think through steps to solve the problem. BUT do not include the answer, just raise the questions.
-3. List all possible angles and approaches
-4. Use natural language and clear logic
-5. Do not include <think></think> tags, I will add them automatically
-
-Question: {query}
-
-Please generate a detailed thinking process:"""
+            
+            # Build thinking prompt using ThinkingPlan
+            thinking_prompt = ThinkingPlan.build_thinking_prompt(query)
+            
             stream = client.chat.completions.create(
                 model=model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are an AI assistant good at thinking. Please generate detailed, natural thinking processes to help analyze and solve problems."
-                    },
-                    {"role": "user", "content": thinking_prompt}
-                ],
+                messages=[{
+                    "role": "system", 
+                    "content": ThinkingPlan.SYSTEM_PROMPT
+                }, {
+                    "role": "user", 
+                    "content": thinking_prompt
+                }],
                 temperature=0.3,
                 max_tokens=1000,
                 stream=True
@@ -283,6 +282,7 @@ Please generate a detailed thinking process:"""
                     }
                     yield f"data: {json.dumps(proxy, ensure_ascii=False)}\n\n"
         except Exception as e:
+            print(f"[API][ERROR] ThinkingPlan generation failed: {e}")
             error_chunk = {
                 "id": f"chatcmpl-{uuid.uuid4().hex[:8]}",
                 "object": "chat.completion.chunk",
@@ -360,8 +360,22 @@ async def generate_openai_compatible_stream(request: ChatCompletionRequest):
         print(f"[API][STREAM] Category={category}, Action={action_name}")
         print(f"[API][STREAM] Streaming answer (length={len(content)})...")
 
+        # 输出 <answer> 开始标签
+        answer_start_chunk = {
+            "id": f"chatcmpl-{uuid.uuid4().hex[:8]}",
+            "object": "chat.completion.chunk",
+            "created": int(time.time()),
+            "model": request.model,
+            "choices": [{
+                "index": 0,
+                "delta": {"content": "<answer>\n"},
+                "finish_reason": None
+            }]
+        }
+        yield f"data: {json.dumps(answer_start_chunk, ensure_ascii=False)}\n\n"
+
         # 流式输出答案
-        chunk_size = 60
+        chunk_size = 10
         for i in range(0, len(content), chunk_size):
             chunk_content = content[i:i+chunk_size]
             chunk_data = {
@@ -377,6 +391,20 @@ async def generate_openai_compatible_stream(request: ChatCompletionRequest):
             }
             yield f"data: {json.dumps(chunk_data, ensure_ascii=False)}\n\n"
             await asyncio.sleep(0.02)
+
+        # 输出 </answer> 结束标签
+        answer_end_chunk = {
+            "id": f"chatcmpl-{uuid.uuid4().hex[:8]}",
+            "object": "chat.completion.chunk",
+            "created": int(time.time()),
+            "model": request.model,
+            "choices": [{
+                "index": 0,
+                "delta": {"content": "\n</answer>"},
+                "finish_reason": None
+            }]
+        }
+        yield f"data: {json.dumps(answer_end_chunk, ensure_ascii=False)}\n\n"
 
         # 发送结束信号（唯一的 [DONE]）
         final_chunk = {

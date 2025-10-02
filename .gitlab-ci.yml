@@ -1,0 +1,121 @@
+variables:
+  SERVICE: "webchaser-api"  # 服务名称
+  # 镜像
+  IMAGE: "webchaser.api"      # 镜像名称推荐和服务名称用一直的，小写字母加中划线组成
+  SWR_HOST: "swr.ap-southeast-1.myhuaweicloud.com"
+  SWR_DEV: "hkgai-dev"
+  SWR_PROD: "hkgai-prod"
+  # 部署
+  DEPLOY_GIT: https://hkgai_devops:$DEVOPS_GIT_TOKEN@git.hkgai.net/hkgai/cce.git
+  DEPLOY_DEV: "$CI_PROJECT_DIR/cce/cce-dev-new/default/$SERVICE/deployment.yaml"
+  DEPLOY_TEST: "$CI_PROJECT_DIR/cce/cce-test/default/$SERVICE/deployment.yaml"
+  DEPLOY_PROD: "$CI_PROJECT_DIR/cce/cce-prod/default/$SERVICE/deployment.yaml"
+
+stages:
+  - build
+  - deploy
+
+image: docker:latest
+
+# ---------------------------------------------------------------
+# 开发和测试环境服务 构建和部署 开始
+build_dev:
+  stage: build
+  services:
+    - docker:26.1.1-dind
+  script:
+    - unset DOCKER_HOST
+    - echo "build WebChaser API image $CI_COMMIT_REF_NAME"
+    - echo "Build Info - Project:$CI_PROJECT_NAME Branch:$CI_COMMIT_REF_NAME Pipeline:$CI_PIPELINE_ID"
+    - echo "Image will be $SWR_HOST/$SWR_DEV/$IMAGE:$CI_PIPELINE_ID"
+    - docker build -t $SWR_HOST/$SWR_DEV/$IMAGE:$CI_PIPELINE_ID --build-arg CI_JOB_TOKEN=$CI_JOB_TOKEN .
+    - docker login -u $PROJECT@$SWR_AK -p $SWR_SK $SWR_HOST
+    - docker push $SWR_HOST/$SWR_DEV/$IMAGE:$CI_PIPELINE_ID
+    - echo "WebChaser API image $SWR_HOST/$SWR_DEV/$IMAGE:$CI_PIPELINE_ID pushed successfully"
+  when: manual
+  except:
+    - main
+
+deploy_dev:
+  image:
+    name: airmount/kaleidoscope:0.0.2
+    entrypoint: [""]
+  stage: deploy
+  script:
+    - git config --global user.name "hkgai_devops"
+    - git config --global user.email "devops@hkgai.org"
+    - git clone $DEPLOY_GIT
+    - current_version=$(grep 'image:' $DEPLOY_DEV | awk -F ':' '{print $3}')
+    - sed -i "s/$SWR_HOST\/$SWR_DEV\/$IMAGE:$current_version/$SWR_HOST\/$SWR_DEV\/$IMAGE:$CI_PIPELINE_ID/g" $DEPLOY_DEV
+    - cd $CI_PROJECT_DIR/cce
+    - git add .
+    - git commit -m "update dev ${SERVICE} for ${CI_COMMIT_TITLE}, image version from ${current_version} to ${CI_PIPELINE_ID} by ${CI_COMMIT_AUTHOR}"
+    - git push $DEPLOY_GIT
+    - echo "WebChaser API dev deployment updated successfully"
+  when: manual
+  except:
+    - main
+
+deploy_test:
+  image:
+    name: airmount/kaleidoscope:0.0.2
+    entrypoint: [""]
+  stage: deploy
+  script:
+    - git config --global user.name "hkgai_devops"
+    - git config --global user.email "devops@hkgai.org"
+    - git clone $DEPLOY_GIT
+    - current_version=$(grep 'image:' $DEPLOY_TEST | awk -F ':' '{print $3}')
+    - sed -i "s/$SWR_HOST\/$SWR_DEV\/$IMAGE:$current_version/$SWR_HOST\/$SWR_DEV\/$IMAGE:$CI_PIPELINE_ID/g" $DEPLOY_TEST
+    - cd $CI_PROJECT_DIR/cce
+    - git add .
+    - git commit -m "update test ${SERVICE} for ${CI_COMMIT_TITLE}, image version from ${current_version} to ${CI_PIPELINE_ID} by ${CI_COMMIT_AUTHOR}"
+    - git push $DEPLOY_GIT
+    - echo "WebChaser API test deployment updated successfully"
+  when: manual
+  except:
+    - master
+# 开发和测试环境服务 构建和部署 结束
+# ---------------------------------------------------------------
+
+
+# ---------------------------------------------------------------
+# 生产环境服务 构建和部署 开始
+build_prod:
+  stage: build
+  services:
+    - docker:26.1.1-dind
+  script:
+    - unset DOCKER_HOST
+    - echo "build WebChaser API production image $CI_COMMIT_REF_NAME"
+    - echo "Production Build Info - Project:$CI_PROJECT_NAME Branch:$CI_COMMIT_REF_NAME Pipeline:$CI_PIPELINE_ID"
+    - echo "Production image will be $SWR_HOST/$SWR_PROD/$IMAGE:$CI_PIPELINE_ID"
+    - docker build -t $SWR_HOST/$SWR_PROD/$IMAGE:$CI_PIPELINE_ID --build-arg CI_JOB_TOKEN=$CI_JOB_TOKEN .
+    - docker login -u $PROJECT@$SWR_AK -p $SWR_SK $SWR_HOST
+    - docker push $SWR_HOST/$SWR_PROD/$IMAGE:$CI_PIPELINE_ID
+    - echo "WebChaser API production image $SWR_HOST/$SWR_PROD/$IMAGE:$CI_PIPELINE_ID pushed successfully"
+  when: manual
+  only:
+    - main
+
+deploy_prod:
+  image:
+    name: airmount/kaleidoscope:0.0.2
+    entrypoint: [""]
+  stage: deploy
+  script:
+    - git config --global user.name "hkgai_devops"
+    - git config --global user.email "devops@hkgai.org"
+    - git clone $DEPLOY_GIT
+    - current_version=$(grep 'image:' $DEPLOY_PROD | awk -F ':' '{print $3}')
+    - sed -i "s/$SWR_HOST\/$SWR_PROD\/$IMAGE:$current_version/$SWR_HOST\/$SWR_PROD\/$IMAGE:$CI_PIPELINE_ID/g" $DEPLOY_PROD
+    - cd $CI_PROJECT_DIR/cce
+    - git add .
+    - git commit -m "update prod ${SERVICE} for ${CI_COMMIT_TITLE}, image version from ${current_version} to ${CI_PIPELINE_ID} by ${CI_COMMIT_AUTHOR}"
+    - git push $DEPLOY_GIT
+    - echo "WebChaser API production deployment updated successfully"
+  when: manual
+  only:
+    - main
+# 生产环境服务 构建和部署 结束
+# ---------------------------------------------------------------

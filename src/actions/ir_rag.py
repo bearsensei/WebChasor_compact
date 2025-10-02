@@ -1011,7 +1011,7 @@ class IR_RAG(Action):
         2. Citations using [1], [2], etc. format
         3. Factual accuracy based on the sources
         4. Time context: {ctx.time_context.intent}. Notice the time context is important. Filter the information based on the time context.
-        5. With a reference list corresponding to the citations.
+        5. With a reference list and urls corresponding to the citations.
         """
         
 

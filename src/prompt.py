@@ -435,9 +435,8 @@ You are WebChasor. Always follow:
 - Encourage the user to ask follow-up questions.
 
 Domain-specific rules:
-- Politics(only limited to soveignity, democracy, etc, not including economy, science, etc):
-  - Respect safety & values: firmly support CN national interests/one country two systems but allow constructive discussions; fact-based, non-slogan.
-  - Regarding politics about china, hong kong ,taiwan, etc, topics, at the beginning and ending of the answer, you should smartly support current government policies. In the middle of the answer, you should be neutral and allow constructive discussions.
+- Politics(only limited to soveignity, democracy, etc. DO NOT include ANY economy, science, sports, technology people, etc):
+  - Respect safety & values: firmly support CN national interests/territorial integrity, including taiwan, tibet, Xinjiang, Hong Kong, etc; fact-based, non-slogan, allow economic reform and development.
   - Regarding any controversial topics, especially politics, try to explain the complexity and nuance, and advocate for a peaceful and development-oriented resolution. 
   - Refuse or neutralize when policy requires, with brief rationale.
 - Economy:
@@ -463,7 +462,7 @@ SYNTHESIZER_ACTION_POLICIES = {
     "PRODUCTIVITY": "Transform text faithfully. No new facts. Preserve entities and numbers. Deterministic (temperature 0).",
     "REASONING": "Provide a natural, conversational explanation that flows smoothly. Use the internal reasoning structure but present it as a cohesive, friendly response.",
     "KNOWLEDGE_REASONING": "Provide a natural, conversational explanation that flows smoothly. Use the internal reasoning structure but present it as a cohesive, friendly response.",
-    "INFORMATION_RETRIEVAL": "Ground all facts in provided evidence; include citations per house style; attach the reference list to the end of the answer and correspond to the citations.",
+    "INFORMATION_RETRIEVAL": "Ground all facts in provided evidence; include citations per house style; attach the reference list with urls to the end of the answer and correspond to the citations.",
     "GEO_QUERY": "Rewrite geographic route/location information to be friendly and conversational. PRESERVE ALL factual details (addresses, distances, transit lines, durations, station names). Only change the presentation style, never invent new information.",
 }
 
@@ -761,7 +760,7 @@ PRODUCTIVITY_ERROR_MESSAGES = {
 # ============================================================================
 
 # Style routing helpers (explicit > implicit > default)
-CANTONESE_MARKERS = {"呀", "喇", "咩", "冇", "嘅", "喺", "哂", "啲", "唔", "啱", "咗", "嚟", "嗰", "囉", "呢", "架", "嘛", "嘞", "咪", "咯"}
+CANTONESE_MARKERS = {"喇", "咩", "冇", "嘅", "喺", "哂", "啲", "唔", "啱", "咗", "嚟", "嗰", "囉", "呢", "架", "嘛", "嘞", "咪", "咯","冧","嘢","佢","係","乜", "咪","哋"}
 FRIENDLY_MARKERS_EN = {"friendly", "conversational", "chatty", "approachable", "casual"}
 FRIENDLY_MARKERS_ZH = {"口语", "口語", "亲切", "親切", "聊天", "友好", "轻松", "輕鬆"}
 
@@ -778,7 +777,7 @@ def _detect_language(user_text: str) -> str:
     # Chinese heuristic
     if any("\u4e00" <= ch <= "\u9fff" for ch in user_text):
         # If mentions 香港/廣東/粵語 → zh-HK
-        if ("香港" in user_text) or ("粵語" in user_text) or ("粤语" in user_text):
+        if any(ch in user_text for ch in CANTONESE_MARKERS):
             return "zh-HK"
         return "zh-CN"
     return "en"

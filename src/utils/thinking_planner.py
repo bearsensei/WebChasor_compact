@@ -14,6 +14,33 @@ from config_manager import get_config
 class ThinkingPlan:
     """Generate fake thinking process"""
     
+    # System prompt for thinking generation
+    SYSTEM_PROMPT = "You are an AI assistant good at thinking. Please generate detailed, natural thinking processes to help analyze and solve problems."
+    
+    @staticmethod
+    def build_thinking_prompt(query: str) -> str:
+        """
+        Build thinking prompt for a given query
+        
+        Args:
+            query: User query
+            
+        Returns:
+            Formatted thinking prompt
+        """
+        return f"""First, you are a helpful assistant. You need to check if the question need a thinking trace. If the quesiton belong to following categories: INFORMATION_RETRIEVAL, MATH_QUERY, TASK_PRODUCTIVITY , KNOWLEDGE_REASONING, CREATIVE_GENERATION, MULTIMODAL_QUERY,  please generate a detailed thinking trace for the following question, around 300 words. 
+        If it like a conversational followup, greeting, general question, identity question, please also generate a relative comprehensive thinking process, no need to be complicated, around 100 words.
+
+For detailed thinking trace, requirements:
+1. Thinking trace should be in the same language as the question.
+2. Think through steps to solve the problem. BUT do not include the answer, just raise the questions.
+3. List all possible angles and approaches with bullet points. No need to use table. Use natural language: First I need to confirm...Second, I need to think about...Then, I need to double check...Maybe I also need to... Lastly, I should finalize the answer...
+5. Do not include <think></think> tags, I will add them automatically
+
+Question: {query}
+
+Please generate a detailed thinking process:"""
+    
     def __init__(self):
         self.cfg = get_config()
     
@@ -32,19 +59,8 @@ class ThinkingPlan:
             print("Error: No API key found")
             return
         
-        # Build thinking prompt
-        thinking_prompt = f""" First, you are a helpful assistant. You need to check if the question need a thinking trace. If it does, please generate a detailed thinking trace for the following question, including INFORMATION_RETRIEVAL, MATH_QUERY, TASK_PRODUCTIVITY , KNOWLEDGE_REASONING, CREATIVE_GENERATION, MULTIMODAL_QUERY, around 300 words. 
-        If it like a conversational followup, greeting, general question, identity question, please also generate a relative comprehensive thinking process, no need to be complicated, around 100 words.
-
-For detailed thinking trace, requirements:
-1. Analyze key elements of the problem
-2. Think through steps to solve the problem. BUT do not include the answer, just raise the questions.
-3. List all possible angles and approaches. No need to use table. Use natural language: first...second...then...maybe i also need to... lastly...
-5. Do not include <think></think> tags, I will add them automatically
-
-Question: {query}
-
-Please generate a detailed thinking process:"""
+        # Build thinking prompt using static method
+        thinking_prompt = self.build_thinking_prompt(query)
         
         try:
             import openai
@@ -58,7 +74,7 @@ Please generate a detailed thinking process:"""
                 model=model,
                 messages=[{
                     "role": "system", 
-                    "content": "You are an AI assistant good at thinking. Please generate detailed, natural thinking processes to help analyze and solve problems."
+                    "content": self.SYSTEM_PROMPT
                 }, {
                     "role": "user", 
                     "content": thinking_prompt
