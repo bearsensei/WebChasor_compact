@@ -2,11 +2,18 @@
 openai>=1.0.0
 python-dotenv>=1.0.0
 requests>=2.25.0
+pyyaml>=6.0.0
+
+# Web framework and API server
 fastapi>=0.104.0
 uvicorn[standard]>=0.24.0
 gunicorn>=21.2.0
 pydantic>=2.0.0
 python-multipart>=0.0.6
+
+# Web scraping and HTML parsing
+beautifulsoup4>=4.12.0
+
 # Optional dependencies for enhanced functionality
 # Uncomment as needed:
 # scikit-learn>=1.0.0  # For lightweight classifier
