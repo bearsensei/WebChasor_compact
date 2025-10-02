@@ -12,6 +12,7 @@ from prompt import (
 )
 from utils.lang_detect import detect_lang_4way
 from utils.timectx import TimeContext
+
 # Load environment variables
 load_dotenv()
 
@@ -68,8 +69,8 @@ class Synthesizer:
         # Get model configuration from config file
         cfg = get_config()
         self.model_name = cfg.get('models.synthesizer.model_name', 'gpt-4')
-        self.temperature = cfg.get('models.synthesizer.temperature', 0.1)
-        self.max_tokens = cfg.get('models.synthesizer.max_tokens', 2000)
+        self.temperature = cfg.get('models.synthesizer.temperature', 0.5)
+        self.max_tokens = cfg.get('models.synthesizer.max_tokens')
         
         if cfg.is_decision_logging_enabled('synthesizer'):
             print(f"[SYNTHESIZER][INIT] model={self.model_name}")
@@ -88,12 +89,15 @@ class Synthesizer:
             import openai
             client = openai.OpenAI(api_key=api_key, base_url=api_base)
             
+            # Get max_tokens from config
+            max_tokens_config = get_config().get('models.synthesizer.max_tokens', 2000)
+            
             async def real_llm(prompt, temperature=0):
                 response = client.chat.completions.create(
                     model=model,
                     messages=[{"role": "user", "content": prompt}],
                     temperature=temperature,
-                    max_tokens=2000
+                    max_tokens=max_tokens_config
                 )
                 return response.choices[0].message.content
             
@@ -134,7 +138,7 @@ class Synthesizer:
             internal_scaffold=(SYNTHESIZER_HIDDEN_REASONING_SCAFFOLD if category == "KNOWLEDGE_REASONING" else "")
         )
 
-        temperature = 0.0 if category == "TASK_PRODUCTIVITY" else constraints.get("temperature", 0.1)
+        temperature = 0.0 if category == "TASK_PRODUCTIVITY" else constraints.get("temperature", self.temperature)
         print(f"[SYNTHESIZER][EXEC] model={self.model_name} temp={temperature} category={category} lang={auto_lang}")
 
         # pass the rendered prompt to the model
@@ -158,8 +162,8 @@ class Synthesizer:
         # Build a simple prompt combining system and user prompts
         full_prompt = f"{system_prompt}\n\nUser Query: {user_query}"
         
-        # Use default temperature for synthesis
-        temperature = 0.0 if category == "TASK_PRODUCTIVITY" else 0.1
+        # Use default temperature for synthesis from config
+        temperature = 0.0 if category == "TASK_PRODUCTIVITY" else self.temperature
         
         # Simple decision print
         print(f"[SYNTHESIZER][EXEC] model={self.model_name} temp={temperature} category={category}")

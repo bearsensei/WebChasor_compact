@@ -226,10 +226,14 @@ class REASONING(Action):
             scaffold = REASONING_SCAFFOLDS[reasoning_type]
             
             # Use synthesizer's generate method with proper constraints for natural output
+            # Build constraints for synthesis with temperature from config
+            cfg = get_config()
+            reasoning_temperature = cfg.get('models.reasoning.temperature', 0.5)
+            
             constraints = {
                 "language": "auto",  # Let synthesizer detect language
                 "tone": "friendly, conversational",
-                "temperature": 0.1,
+                "temperature": reasoning_temperature,  # Use config value
                 "instruction_hint": f"Focus on {reasoning_type.value} reasoning approach."
             }
             

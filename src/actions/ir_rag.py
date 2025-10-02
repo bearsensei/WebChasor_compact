@@ -165,18 +165,28 @@ class Planner:
             prompt = self.planner_prompt.replace("{user_query}", query)
             
             # Call LLM for planning
+            cfg = get_config()
+            planner_max_tokens = cfg.get('models.planner.max_tokens', 2000)
+            planner_temperature = cfg.get('models.planner.temperature', 0.1)
+            
             response = self.client.chat.completions.create(
                 model=self.model_name,
                 messages=[
                     {"role": "system", "content": prompt},
                     {"role": "user", "content": f"User: {query}"}
                 ],
-                temperature=0.1,
-                max_tokens=1500
+                temperature=planner_temperature,
+                max_tokens=planner_max_tokens
             )
             
             plan_text = response.choices[0].message.content.strip()
-            # print(f"Planner response: {plan_text}")
+            finish_reason = response.choices[0].finish_reason
+            
+            # Check if response was truncated
+            if finish_reason == 'length':
+                logger.warning(f"Planner response was truncated (finish_reason=length), may cause JSON parse error")
+                print(f"[PLANNER][WARN] Response truncated at {len(plan_text)} chars, consider increasing max_tokens")
+            
             # Parse JSON response
             try:
                 plan_data = json.loads(plan_text)
@@ -203,8 +213,12 @@ class Planner:
                 return extraction_plan
                 
             except json.JSONDecodeError as e:
+                print(f"[PLANNER][ERROR] Failed to parse planner JSON: {e}")
+                print(f"[PLANNER][ERROR] Raw response (first 500 chars): {plan_text[:500]}")
+                print(f"[PLANNER][ERROR] Raw response (last 200 chars): {plan_text[-200:]}")
                 logger.error(f"Failed to parse planner JSON: {e}")
                 logger.error(f"Raw response: {plan_text}")
+                print(f"[PLANNER][FALLBACK] Using fallback plan")
                 return self._create_fallback_plan(query)
                 
         except Exception as e:
@@ -1003,11 +1017,14 @@ class IR_RAG(Action):
 
         # Call synthesizer using the new generate method for proper global prompt support
         if hasattr(toolset, 'synthesizer'):
-            # Set up constraints for IR_RAG synthesis
+            # Set up constraints for IR_RAG synthesis with temperature from config
+            cfg = get_config()
+            ir_rag_temperature = cfg.get('models.synthesizer.temperature', 0.5)
+            
             constraints = {
                 "language": "auto",  # Let synthesizer detect language
-                "tone": "factual, authoritative", 
-                "temperature": 0.1,
+                "tone": "factual, authoritative",
+                "temperature": ir_rag_temperature,  # Use config value
                 "instruction_hint": "Provide a comprehensive answer with clear sections and proper citations using [1], [2], etc. format."
             }
             

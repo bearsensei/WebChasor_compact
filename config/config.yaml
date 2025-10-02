@@ -108,10 +108,10 @@ models:
   # Task planning model
   planner:
     fallback_enabled: true       # Enable fallback mechanisms
-    max_tokens: 1500            # Maximum tokens for planning
+    max_tokens: 3000            # Maximum tokens for planning (increased for complex plans)
     model_name: gpt-oss-20b           # Model name for planning
     provider: openai            # Model provider
-    temperature: 0.1            # Low temperature for consistent planning
+    temperature: 0.1            # Low temperature for consistent planning (JSON generation)
   
   # Request routing model
   router:
@@ -119,28 +119,28 @@ models:
     max_tokens: 500             # Maximum tokens for routing decisions
     model_name: gpt-oss-120b   # Model name for routing
     provider: openai            # Model provider
-    temperature: 0.1            # Low temperature for consistent routing
+    temperature: 0.5            # Low temperature for consistent routing
   
   # Response synthesis model
   synthesizer:
     fallback_enabled: true       # Enable fallback mechanisms
-    max_tokens: 2000            # Maximum tokens for synthesis
+    max_tokens: 50000             # Maximum tokens for synthesis (optimized for detailed answers)
     model_name: gpt-oss-120b           # Model name for synthesis
     provider: openai            # Model provider
-    temperature: 0.1            # Low temperature for consistent synthesis
+    temperature: 0.5             # Balanced temperature for natural, detailed responses
   
   # Reasoning analysis model
   reasoning:
     fallback_enabled: true       # Enable fallback mechanisms
-    max_tokens: 2000            # Maximum tokens for reasoning
+    max_tokens: 8000            # Maximum tokens for detailed reasoning
     model_name: gpt-oss-20b           # Model name for reasoning
     provider: openai            # Model provider
-    temperature: 0.1            # Low temperature for consistent reasoning
+    temperature: 0.5            # Balanced temperature for natural, detailed reasoning
   
   # Productivity task model
   productivity:
     fallback_enabled: true       # Enable fallback mechanisms
-    max_tokens: 1500            # Maximum tokens for productivity tasks
+    max_tokens: 50000            # Maximum tokens for productivity tasks
     model_name: gpt-oss-20b   # Model name for productivity
     provider: openai            # Model provider
     temperature: 0.0            # Deterministic output for productivity
@@ -168,8 +168,8 @@ performance:
   
   # Token limits
   tokens:
-    max_input: 8000   # Maximum input tokens
-    max_output: 2000  # Maximum output tokens
+    max_input: 50000   # Maximum input tokens
+    max_output: 50000  # Maximum output tokens
 
 # Productivity tools configuration
 productivity:

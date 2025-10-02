@@ -402,7 +402,7 @@ class Router:
                 model=self.config.model,
                 messages=messages,
                 temperature=self.config.temperature,
-                max_tokens=200  # 减少 tokens，类别名称只需要几个词
+                max_tokens=self.config.max_tokens  # Use config value for max_tokens
             )
             
             raw_response = response.choices[0].message.content
