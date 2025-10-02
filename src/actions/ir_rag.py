@@ -1014,11 +1014,14 @@ class IR_RAG(Action):
         
         Please provide a well-structured response with:
         1. Clear sections based on the information found
-        2. Citations using [1], [2], etc. format
-        3. Factual accuracy based on the sources
-        4. Time context: {ctx.time_context.intent}. Notice the time context is important. Filter the information based on the time context.
-        5. With a reference list and urls corresponding to the citations.
-        6. MUST use all retrieved information, no missing information.
+        2. DO NOT include any citation numbers like [1], [2], etc. in the main text
+        3. Use diverse formatting: include bullet points, numbered lists, comparison tables where appropriate
+        4. For key facts/statistics/comparisons, use tables or lists instead of long paragraphs
+        5. Mix paragraph text with structured formats (lists, tables) for better readability
+        6. Factual accuracy based on the sources
+        7. Time context: {ctx.time_context.intent}. Notice the time context is important. Filter the information based on the time context.
+        8. Include a "References" or "参考来源" section at the very end listing all sources
+        9. MUST use all retrieved information, no missing information.
         """
         
 
@@ -1032,7 +1035,7 @@ class IR_RAG(Action):
                 "language": "auto",  # Let synthesizer detect language
                 "tone": "factual, authoritative",
                 "temperature": ir_rag_temperature,  # Use config value
-                "instruction_hint": "Provide a comprehensive answer with clear sections and proper citations using [1], [2], etc. format."
+                "instruction_hint": "Provide a comprehensive answer with clear sections. Use diverse formatting: bullet points, numbered lists, and tables where appropriate. Mix paragraphs with structured formats for better readability. DO NOT use citation numbers [1], [2], etc. in the main text. Only include a reference list at the end."
             }
             
             response = await toolset.synthesizer.generate(

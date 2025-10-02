@@ -282,7 +282,7 @@ async def thinking_stream_sse(query: str, request_model: str):
                             "finish_reason": None
                         }]
                     }
-                    await asyncio.sleep(0.02)
+                    # await asyncio.sleep(0.02)
                     yield f"data: {json.dumps(proxy, ensure_ascii=False)}\n\n"
         except Exception as e:
             print(f"[API][ERROR] ThinkingPlan generation failed: {e}")

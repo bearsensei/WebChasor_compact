@@ -234,7 +234,7 @@ class REASONING(Action):
                 "language": "auto",  # Let synthesizer detect language
                 "tone": "friendly, conversational",
                 "temperature": reasoning_temperature,  # Use config value
-                "instruction_hint": f"Focus on {reasoning_type.value} reasoning approach."
+                "instruction_hint": f"Focus on {reasoning_type.value} reasoning approach. Use diverse formatting: bullet points, numbered lists, comparison tables, and structured presentations where appropriate. Mix paragraphs with lists and tables for better readability."
             }
             
             # Execute reasoning through synthesizer using generate method
