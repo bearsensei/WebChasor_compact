@@ -7,12 +7,9 @@ import os
 import json
 import requests
 from typing import List, Dict, Any, Union
-from qwen_agent.tools.base import BaseTool, register_tool
-
-@register_tool("serpapi_search", allow_overwrite=True)
 
 
-class SerpAPISearch(BaseTool):
+class SerpAPISearch:
     """SerpAPI search tool for WebChaser"""
     
     name = "serpapi_search"
@@ -45,7 +42,6 @@ class SerpAPISearch(BaseTool):
     ]
 
     def __init__(self):
-        super().__init__()
         self.api_key = os.getenv('SERPAPI_KEY', '')
         if not self.api_key:
             print("Warning: SERPAPI_KEY environment variable not set")
