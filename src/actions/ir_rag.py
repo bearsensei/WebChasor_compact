@@ -830,10 +830,10 @@ class IR_RAG(Action):
         """Search using SerpAPI"""
         print(f"🔍 IR_RAG: Searching with SerpAPI...")
 
-        # Build search query from plan
-        search_query = self._build_search_query(query, plan)
+        # Use original query directly without adding extracted keywords
+        search_query = query
 
-        # 只添加时间信息
+        # Only add time context if available
         if ctx.time_context:
             time_ctx = ctx.time_context
             
@@ -888,25 +888,28 @@ class IR_RAG(Action):
         # In the future, this would combine results from both sources
         return await self._serpapi_search(query, plan, ctx)
     
-    def _build_search_query(self, original_query: str, plan: ExtractionPlan) -> str:
+    def _build_search_query(self, original_query: str, plan: ExtractionPlan, ctx: Context) -> str:
         """Build optimized search query from plan"""
         # Extract key terms from tasks
         key_terms = []
         
         if plan.entity:
             key_terms.append(plan.entity)
-        
-        # Extract important terms from task facts
-        for task in plan.tasks_to_extract[:3]:  # Use top 3 tasks
-                    # 过滤掉常见的英文停用词
-            stop_words = {'what', 'how', 'when', 'where', 'who', 'why', 'is', 'are', 'was', 'were', 'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by'}
-        
-            fact_terms = re.findall(r'\b[A-Z][a-z]+\b', task.fact)
-            filtered_terms = [term for term in fact_terms if term.lower() not in stop_words]
-            key_terms.extend(filtered_terms[:2])  # Max 2 terms per task
+        if ctx.time_context and ctx.time_context.window[0]:
+            start_date = ctx.time_context.window[0].split('T')[0]
+            key_terms.append(start_date)
             
-            chinese_terms = re.findall(r'[\u4e00-\u9fff]+', task.fact)
-            key_terms.extend(chinese_terms[:2])  # Max 2 Chinese terms per task
+        # Extract important terms from task facts
+        # for task in plan.tasks_to_extract[:3]:  # Use top 3 tasks
+                    # 过滤掉常见的英文停用词
+            # stop_words = {'what', 'how', 'when', 'where', 'who', 'why', 'is', 'are', 'was', 'were', 'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by'}
+        
+            # fact_terms = re.findall(r'\b[A-Z][a-z]+\b', task.fact)
+            # filtered_terms = [term for term in fact_terms if term.lower() not in stop_words]
+            # key_terms.extend(filtered_terms[:2])  # Max 2 terms per task
+            
+            # chinese_terms = re.findall(r'[\u4e00-\u9fff]+', task.fact)
+            # key_terms.extend(chinese_terms[:2])  # Max 2 Chinese terms per task
     
         # Combine with original query
         if key_terms:
@@ -914,6 +917,7 @@ class IR_RAG(Action):
         else:
             search_query = original_query
         
+        # 简化了
         return search_query[:200]  # Limit query length
     
     def _parse_serpapi_results(self, raw_results: str, query: str) -> List[SearchResult]:
