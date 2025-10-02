@@ -830,8 +830,8 @@ class IR_RAG(Action):
         """Search using SerpAPI"""
         print(f"🔍 IR_RAG: Searching with SerpAPI...")
 
-        # Use original query directly without adding extracted keywords
-        search_query = query
+        # Build search query from plan
+        search_query = self._build_search_query(query, plan, ctx)
 
         # Only add time context if available
         if ctx.time_context:
