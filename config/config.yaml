@@ -53,8 +53,14 @@ ir_rag:
     language: zh-cn         # Search language (Chinese Simplified)
     location: Hong Kong     # Geographic location for search
     max_results: 20        # Maximum search results to return
-    provider: serpapi       # Search API provider
+    # Single provider: 'serpapi', 'google_custom_search', or 'gcp_vertex_search'
+    # Multiple providers (comma-separated): 'serpapi,gcp_vertex_search' (merges results from all)
+    provider: serpapi,gcp_vertex_search
     safe_search: true      # Enable safe search filtering
+    # Batch search concurrency settings (for multiple queries)
+    concurrent: 2          # Max concurrent searches in batch mode (reduced for Google API limits)
+    qps: 1                 # Queries per second rate limit (reduced for Google API limits)
+    retries: 2             # Retry attempts per query
   
   # Vector database settings
   vector_db:
@@ -148,7 +154,7 @@ models:
   # Query generation model
   querymaker:
     fallback_enabled: true       # Enable fallback mechanisms
-    max_tokens: 2000             # Maximum tokens for query generation
+    max_tokens: 5000             # Maximum tokens for query generation
     model_name: gpt-oss-20b     # Model name for query generation
     provider: openai            # Model provider
     temperature: 0.8            # Higher temperature for diverse queries

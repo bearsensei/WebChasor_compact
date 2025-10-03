@@ -8,7 +8,7 @@ import json
 import logging
 from typing import List, Optional
 from dataclasses import dataclass
-from dotenv import load_dotenv
+import datetime
 import openai
 
 from config_manager import get_config
@@ -17,8 +17,6 @@ from artifacts import Context
 # Setup logging
 logger = logging.getLogger(__name__)
 
-# Load environment variables
-load_dotenv()
 
 
 @dataclass
@@ -29,41 +27,192 @@ class QueryMakerConfig:
     model: str
     temperature: float = 0.7
     max_tokens: int = 500
-    num_queries: int = 5
+    num_queries: int = 10
+    current_time: str = datetime.datetime.now().strftime("%Y-%m-%d")
+
+QUERYMAKER_PROMPT = """You are a search query generator. Generate 5-10 diverse search queries to help answer the user's question comprehensively. The current time is {current_time}. Please consider the time information when generating queries.
+
+**CRITICAL REQUIREMENTS:**
+1. Output ONLY a JSON array of strings: ["query1 last month", "query2 2025", "query3 2018-2020", ...]
+2. DO NOT output any thinking, explanations, or extra text
+3. Start directly with [ and end with ]
+4. Use the SAME LANGUAGE as the user's query
+5. Keep each query short, less than 5 words (4 words plus extra information, like time, area, etc.)
+
+**Query Diversity Guidelines:**
+- Cover different angles: background, current status, rules/regulations, future trends, comparisons, data/statistics
+- Use specific time information if needed: 2025, July 2023, etc.
+- Introduce NEW entities not in the original query (at least 2 queries)
+- Include historical context AND future predictions
+- Mix general and specific queries
+- Be creative - think of queries the user might not have considered  
 
 
-QUERYMAKER_PROMPT = """You are a search query generator. Given a user's original query, generate {num_queries} diverse search queries that will help retrieve comprehensive information to answer the user's question in the SAME LANGUAGE as the original query.
+**Examples:**
 
-**CRITICAL: Output ONLY the JSON array. Do NOT output any thinking process, explanations, or commentary. Start your response directly with [ and end with ].**
+Example 1 (简洁示例):
+User: 下一任香港特首可能是谁？
+JSON:
+{
+  "topic": "下一任香港特首可能人选",
+  "entities_core": ["香港特首"],
+  "entities_added": ["往届候选人","选举委员会","行政会议成员"],
+  "slots": [
+    {"slot":"BIO","queries":["历届特首候选人履历","曾参选未当选候选人轨迹"]},
+    {"slot":"CURRENT","queries":["潜在人选最新名单 2025","媒体盘点热门人选 2025"]},
+    {"slot":"RULES","queries":["特首参选资格与流程 2025","选举委员会组成与提名门槛 2025"]},
+    {"slot":"OPPOSITE","queries":["历届落选候选人复盘","争议性参选事件"]},
+    {"slot":"FUTURE","queries":["未来施政需要的领导特质","下一任施政重点预测"]},
+    {"slot":"COMPARISON","queries":["港澳领导人选拔机制对比","历任特首背景结构对比"]},
+    {"slot":"DATA","queries":["历届投票率与结果统计","提名数与当选概率关系"]},
+    {"slot":"IMPACT","queries":["新特首对经济政策影响","对房屋与民生政策影响"]},
+    {"slot":"WILDCARD","queries":["危机管理案例与领导力要求","技术官僚与政治型领导成效对比"]},
+    {"slot":"Politics:舆情","queries":["社会舆情对人选评价","社论对新特首期望"]}
+  ]
+}
 
-## Requirements:
-1. Do not just paraphrase the original query. Go beyond it.  
-2. Include queries that are not easy to think of at first glance.  
-3. Expand beyond the mentioned entity:  
-   - Related entities (allies, competitors, collaborators, alternative systems)  
-   - Opposite entities (contrastive cases, counterexamples, rivals)  
-   - Entities not mentioned in the query but logically connected (historical figures, organizations, datasets, benchmarks, regions, etc.)  
-4. Mix different perspectives: history, future, comparisons, failures, user experience, numbers/statistics, analogies.  
-5. At least 2 queries should introduce new entities not present in the original query.  
-6. Keep queries short (≤12 words) and suitable for search engines.  
+Example 2 — Tech
+User query: “如何提升大模型推理能力？”
+JSON:
+{
+  "topic": "大模型推理能力提升",
+  "entities_core": ["大模型","推理能力"],
+  "entities_added": ["早期研究历史","benchmark 最新成绩","AI 安全规范","推理透明性要求","失败案例收集","未来发展趋势","多模态推理","代表性数据集","硬件对推理性能影响","算法优化方法"],
+  "slots": [
+    {"slot":"BIO","queries":["大模型推理早期研究历史"]},
+    {"slot":"CURRENT","queries":["GPT-4 推理 benchmark 最新成绩 2025"]},
+    {"slot":"RULES","queries":["AI 安全规范中的推理透明性要求"]},
+    {"slot":"OPPOSITE","queries":["大模型推理失败案例收集"]},
+    {"slot":"FUTURE","queries":["多模态推理未来发展趋势"]},
+    {"slot":"COMPARISON","queries":["GPT vs LLaMA 推理能力对比"]},
+    {"slot":"DATA","queries":["MMLU、BigBench 推理分数统计"]},
+    {"slot":"IMPACT","queries":["推理改进对金融合规的影响"]},
+    {"slot":"WILDCARD","queries":["人类逻辑谬误与 AI 推理错误类比"]},
+    {"slot":"Tech","queries":["硬件对推理性能影响 / 算法优化方法 / 代表性数据集"]}
+  ]
+}
 
-## Examples:
+⸻
 
-[USER QUERY] 如何减少大模型的幻觉?
-[OUTPUT]
-["大模型幻觉的历史案例", "减少幻觉的未来研究方向", "OpenAI 与 Anthropic 对比 幻觉处理", "用户角度如何感知模型幻觉", "大模型幻觉率统计 2024"]
+Example 2 — 经济
 
-[USER QUERY] 如何减少大模型的幻觉?
-[OUTPUT]
-["为什么幻觉难以避免？哪些情况下幻觉有用？", "医学中减少幻觉的方法 与 AI 对比", "人类记忆错误 vs AI 幻觉", "业界实践 幻觉控制 案例 study"]
+User query: “为什么全球供应链波动加剧？”
+JSON:
+{
+  "topic": "全球供应链波动加剧",
+  "entities_core": ["全球供应链","供应链波动"],
+  "entities_added": ["全球供应链演化历史","2025 全球供应链中断最新事件","各国贸易政策对供应链的限制","稳定供应链国家案例（新加坡、瑞士）","去全球化趋势下的供应链未来","亚洲与欧美供应链韧性对比","全球港口拥堵率与物流指数","供应链波动对通胀的影响","气候变化如何影响供应链稳定性","半导体产业链关键节点 / 跨境资本流动对供应链的作用"],
+  "slots": [
+    {"slot":"BIO","queries":["全球供应链演化历史"]},
+    {"slot":"CURRENT","queries":["2025 全球供应链中断最新事件"]},
+    {"slot":"RULES","queries":["各国贸易政策对供应链的限制"]},
+    {"slot":"OPPOSITE","queries":["稳定供应链国家案例（新加坡、瑞士）"]},
+    {"slot":"FUTURE","queries":["去全球化趋势下的供应链未来"]},
+    {"slot":"COMPARISON","queries":["亚洲与欧美供应链韧性对比"]},
+    {"slot":"DATA","queries":["全球港口拥堵率与物流指数"]},
+    {"slot":"IMPACT","queries":["供应链波动对通胀的影响"]},
+    {"slot":"WILDCARD","queries":["气候变化如何影响供应链稳定性"]},
+    {"slot":"Economy","queries":["半导体产业链关键节点 / 跨境资本流动对供应链的作用"]}
+  ]
+}
 
-[USER QUERY] 介绍一下叶玉如校长
-[OUTPUT]
-["叶玉如 香港科技大学", "Nancy Ip Yuk-yu profile", "叶玉如 神经科学研究", "叶玉如 学术成就", "Professor Nancy Ip biography"]
+⸻
 
-## ACTUAL TASK
-[USER QUERY] {user_query}
-[OUTPUT]
+Example 3 — 医疗
+
+User query: “糖尿病有哪些最新疗法？”
+JSON:
+{
+  "topic": "糖尿病最新疗法",
+  "entities_core": ["糖尿病","疗法"],
+  "entities_added": ["糖尿病治疗历史方法","最新二型糖尿病药物研究进展","各国糖尿病治疗指南对比","失败药物临床试验案例","基因疗法治疗糖尿病趋势","中医 vs 西医 治疗对比","全球糖尿病患者发病率统计","新疗法对医保负担的影响","动物实验中发现的潜在疗法","常见并发症病例 / 最新药物名称 / 国际临床指南"],
+  "slots": [
+    {"slot":"BIO","queries":["糖尿病治疗历史方法"]},
+    {"slot":"CURRENT","queries":["最新二型糖尿病药物研究进展"]},
+    {"slot":"RULES","queries":["各国糖尿病治疗指南对比"]},
+    {"slot":"OPPOSITE","queries":["失败药物临床试验案例"]},
+    {"slot":"FUTURE","queries":["基因疗法治疗糖尿病趋势"]},
+    {"slot":"COMPARISON","queries":["中医 vs 西医 治疗对比"]},
+    {"slot":"DATA","queries":["全球糖尿病患者发病率统计"]},
+    {"slot":"IMPACT","queries":["新疗法对医保负担的影响"]},
+    {"slot":"WILDCARD","queries":["动物实验中发现的潜在疗法"]},
+    {"slot":"Medical","queries":["常见并发症病例 / 最新药物名称 / 国际临床指南"]}
+  ]
+}
+
+⸻
+
+Example 4 — 教育
+
+User query: “AI 如何改变大学教学？”
+JSON:
+{
+  "topic": "AI 如何改变大学教学",
+  "entities_core": ["AI","大学教学"],
+  "entities_added": ["教学技术发展史（MOOC, e-learning）","香港大学 AI 辅助教学案例","各国教育部对 AI 教学的政策","传统课堂优势与 AI 教学劣势","AI 在未来教育模式中的角色","美国与中国大学 AI 教学应用差异","学生满意度与学习成果对比数据","AI 教学对教师角色的影响","AI 与个性化教育心理学结合","AI 辅助课程设计 / 师资培训 / 国际经验"],
+  "slots": [
+    {"slot":"BIO","queries":["教学技术发展史（MOOC, e-learning）"]},
+    {"slot":"CURRENT","queries":["香港大学 AI 辅助教学案例"]},
+    {"slot":"RULES","queries":["各国教育部对 AI 教学的政策"]},
+    {"slot":"OPPOSITE","queries":["传统课堂优势与 AI 教学劣势"]},
+    {"slot":"FUTURE","queries":["AI 在未来教育模式中的角色"]},
+    {"slot":"COMPARISON","queries":["美国与中国大学 AI 教学应用差异"]},
+    {"slot":"DATA","queries":["学生满意度与学习成果对比数据"]},
+    {"slot":"IMPACT","queries":["AI 教学对教师角色的影响"]},
+    {"slot":"WILDCARD","queries":["AI 与个性化教育心理学结合"]},
+    {"slot":"Education","queries":["AI 辅助课程设计 / 师资培训 / 国际经验"]}
+  ]
+}
+
+⸻
+
+Example 5 — 政治
+
+User query: “下一任香港特首可能是谁？”
+JSON:
+{
+  "topic": "下一任香港特首可能人选",
+  "entities_core": ["香港特首"],
+  "entities_added": ["往届候选人","选举委员会","行政会议成员"],
+  "slots": [
+    {"slot":"BIO","queries":["历届特首候选人履历"]},
+    {"slot":"CURRENT","queries":["最新潜在人选名单"]},
+    {"slot":"RULES","queries":["特首参选资格与选举流程"]},
+    {"slot":"OPPOSITE","queries":["历届落选候选人分析"]},
+    {"slot":"FUTURE","queries":["香港未来施政需要的领导特质"]},
+    {"slot":"COMPARISON","queries":["港澳领导人选拔机制对比"]},
+    {"slot":"DATA","queries":["历届投票率与结果数据"]},
+    {"slot":"IMPACT","queries":["新特首对经济政策可能影响"]},
+    {"slot":"WILDCARD","queries":["危机管理案例与领导力要求"]},
+    {"slot":"Politics","queries":["舆情调查 / 政党立场 / 选举委员会影响"]}
+  ]
+}
+
+⸻
+
+Example 6 — 历史
+
+User query: “冷战的根本原因是什么？”
+JSON:
+{
+  "topic": "冷战根本原因",
+  "entities_core": ["冷战","根本原因"],
+  "entities_added": ["冷战关键人物与联盟起源","学术界最新冷战研究观点","二战后国际条约与安全体系","反冷战学派的观点","“新冷战”风险预测","美苏与当今中美对比","军备竞赛开支与经济数据","冷战对全球第三世界国家的影响","冷战与古代帝国对抗的类比","时间线梳理 / 史料争议 / 因果链分析"],
+  "slots": [
+    {"slot":"BIO","queries":["冷战关键人物与联盟起源"]},
+    {"slot":"CURRENT","queries":["学术界最新冷战研究观点"]},
+    {"slot":"RULES","queries":["二战后国际条约与安全体系"]},
+    {"slot":"OPPOSITE","queries":["反冷战学派的观点"]},
+    {"slot":"FUTURE","queries":["“新冷战”风险预测"]},
+    {"slot":"COMPARISON","queries":["美苏与当今中美对比"]},
+    {"slot":"DATA","queries":["军备竞赛开支与经济数据"]},
+    {"slot":"IMPACT","queries":["冷战对全球第三世界国家的影响"]},
+    {"slot":"WILDCARD","queries":["冷战与古代帝国对抗的类比"]},
+    {"slot":"History","queries":["时间线梳理 / 史料争议 / 因果链分析"]}
+  ]
+}
+
+
 """
 
 
@@ -135,10 +284,9 @@ class QueryMaker:
             logger.info(f"[QueryMaker] Generating {self.config.num_queries} queries for: {original_query[:100]}...")
             
             # Build prompt
-            prompt = QUERYMAKER_PROMPT.format(
-                num_queries=self.config.num_queries,
-                user_query=original_query
-            )
+            # NOTE: Do NOT use .format() on QUERYMAKER_PROMPT because it contains many JSON braces `{}` in few-shot examples.
+            # Using .format() would treat them as placeholders and raise KeyError such as '\n  "topic"'.
+            prompt = QUERYMAKER_PROMPT + f"\n\n# Constraint: Limit total generated queries to about {self.config.num_queries}."
             
             # Call LLM
             print(f"[QueryMaker][DEBUG] Calling LLM with model={self.config.model}, temp={self.config.temperature}")
@@ -170,16 +318,55 @@ class QueryMaker:
             
             response_text = response_text.strip()
             
+            print(f"[QueryMaker][DEBUG] Raw response length: {len(response_text)}")
+            print(f"[QueryMaker][DEBUG] Raw response (first 500 chars): {response_text[:500]}")
+            
+            # Try to extract JSON from response (handle cases where LLM adds extra text)
+            json_text = response_text
+            
+            # If response contains markdown code blocks, extract JSON from them
+            if '```json' in response_text:
+                import re
+                match = re.search(r'```json\s*(\{.*?\})\s*```', response_text, re.DOTALL)
+                if match:
+                    json_text = match.group(1)
+                    print(f"[QueryMaker][DEBUG] Extracted JSON from markdown code block")
+            elif '```' in response_text:
+                import re
+                match = re.search(r'```\s*(\{.*?\})\s*```', response_text, re.DOTALL)
+                if match:
+                    json_text = match.group(1)
+                    print(f"[QueryMaker][DEBUG] Extracted JSON from code block")
+            
+            # Try to find JSON object by looking for { ... }
+            if not json_text.startswith('{'):
+                import re
+                match = re.search(r'(\{.*\})', response_text, re.DOTALL)
+                if match:
+                    json_text = match.group(1)
+                    print(f"[QueryMaker][DEBUG] Extracted JSON by pattern matching")
+            
             # Parse JSON response
             try:
-                queries = json.loads(response_text)
+                parsed = json.loads(json_text)
                 
-                if not isinstance(queries, list):
-                    logger.warning(f"[QueryMaker] Response is not a list: {response_text[:100]}")
+                # Handle new structured format with slots
+                if isinstance(parsed, dict) and 'slots' in parsed:
+                    # Extract queries from all slots
+                    valid_queries = []
+                    for slot in parsed.get('slots', []):
+                        slot_queries = slot.get('queries', [])
+                        valid_queries.extend([q.strip() for q in slot_queries if isinstance(q, str) and q.strip()])
+                    
+                    logger.info(f"[QueryMaker] Extracted {len(valid_queries)} queries from {len(parsed.get('slots', []))} slots")
+                
+                # Handle simple list format (backward compatibility)
+                elif isinstance(parsed, list):
+                    valid_queries = [q.strip() for q in parsed if isinstance(q, str) and q.strip()]
+                
+                else:
+                    logger.warning(f"[QueryMaker] Unexpected response format: {type(parsed)}, keys: {parsed.keys() if isinstance(parsed, dict) else 'N/A'}")
                     return self._fallback_queries(original_query, ctx)
-                
-                # Filter and validate queries
-                valid_queries = [q.strip() for q in queries if isinstance(q, str) and q.strip()]
                 
                 if not valid_queries:
                     logger.warning(f"[QueryMaker] No valid queries generated")
@@ -200,11 +387,19 @@ class QueryMaker:
                 return final_queries
                 
             except json.JSONDecodeError as e:
-                logger.error(f"[QueryMaker] JSON parse error: {e}, response: {response_text[:200]}")
+                logger.error(f"[QueryMaker] JSON parse error: {e}")
+                print(f"[QueryMaker][ERROR] JSON parse failed at position {e.pos}")
+                print(f"[QueryMaker][ERROR] Attempted to parse: {json_text[:300]}")
+                print(f"[QueryMaker][ERROR] Full response length: {len(response_text)}")
                 return self._fallback_queries(original_query, ctx)
         
         except Exception as e:
             logger.error(f"[QueryMaker] Failed to generate queries: {e}")
+            print(f"[QueryMaker][ERROR] Exception type: {type(e).__name__}")
+            print(f"[QueryMaker][ERROR] Exception details: {str(e)}")
+            import traceback
+            print(f"[QueryMaker][ERROR] Traceback:")
+            traceback.print_exc()
             return self._fallback_queries(original_query, ctx)
     
     def _fallback_queries(self, original_query: str, ctx: Optional[Context] = None) -> List[str]:

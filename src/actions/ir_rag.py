@@ -18,6 +18,8 @@ import time
 from utils.timectx import TimeContext, parse_time_intent
 from artifacts import Action, Context, Artifact
 from actions.serpapi_search import SerpAPISearch
+from actions.google_search import GoogleCustomSearch
+from actions.gcp_vertex_search import GCPVertexSearch
 from actions.querymaker import QueryMaker
 from config_manager import get_config
 
@@ -27,6 +29,8 @@ logger = logging.getLogger(__name__)
 class RetrievalProvider(Enum):
     """Available retrieval providers"""
     SERPAPI = "serpapi"
+    GOOGLE_CUSTOM_SEARCH = "google_custom_search"
+    GCP_VERTEX_SEARCH = "gcp_vertex_search"
     VECTOR_DB = "vector_db"  # Placeholder for future implementation
     HYBRID = "hybrid"        # Combine both sources
 
@@ -97,6 +101,7 @@ class IRConfig:
     # Search configuration
     max_search_results: int = 10
     search_provider: RetrievalProvider = RetrievalProvider.SERPAPI
+    search_providers: List[RetrievalProvider] = None  # Multiple providers for hybrid/fallback
     search_location: str = "Hong Kong"
     search_language: str = "zh-cn"
     
@@ -731,7 +736,45 @@ class IR_RAG(Action):
         
         self.planner = Planner(llm_client, planner_model)
         self.querymaker = QueryMaker()
-        self.search_tool = SerpAPISearch()
+        
+        # Initialize search tool(s) based on provider configuration
+        # Support multiple providers for hybrid search
+        if self.config.search_providers:
+            # Multiple providers configured
+            self.search_tools = []
+            provider_names = []
+            for provider in self.config.search_providers:
+                if provider == RetrievalProvider.GOOGLE_CUSTOM_SEARCH:
+                    self.search_tools.append(GoogleCustomSearch())
+                    provider_names.append("Google Custom Search")
+                elif provider == RetrievalProvider.GCP_VERTEX_SEARCH:
+                    self.search_tools.append(GCPVertexSearch())
+                    provider_names.append("GCP Vertex AI Search")
+                elif provider == RetrievalProvider.SERPAPI:
+                    self.search_tools.append(SerpAPISearch())
+                    provider_names.append("SerpAPI")
+            
+            # Use first tool as primary (for backward compatibility)
+            self.search_tool = self.search_tools[0] if self.search_tools else SerpAPISearch()
+            
+            if cfg.is_decision_logging_enabled('ir_rag'):
+                print(f"[IR_RAG][INIT] Using multiple search providers: {', '.join(provider_names)}")
+        else:
+            # Single provider configured (backward compatibility)
+            self.search_tools = []
+            if self.config.search_provider == RetrievalProvider.GOOGLE_CUSTOM_SEARCH:
+                self.search_tool = GoogleCustomSearch()
+                if cfg.is_decision_logging_enabled('ir_rag'):
+                    print(f"[IR_RAG][INIT] Using Google Custom Search API")
+            elif self.config.search_provider == RetrievalProvider.GCP_VERTEX_SEARCH:
+                self.search_tool = GCPVertexSearch()
+                if cfg.is_decision_logging_enabled('ir_rag'):
+                    print(f"[IR_RAG][INIT] Using GCP Vertex AI Search")
+            else:
+                self.search_tool = SerpAPISearch()
+                if cfg.is_decision_logging_enabled('ir_rag'):
+                    print(f"[IR_RAG][INIT] Using SerpAPI")
+        
         self.visitor = WebVisitor(self.config)
         self.ranker = ContentRanker(self.config)
         self.extractor = InformationExtractor(llm_client, extractor_model)
@@ -744,8 +787,34 @@ class IR_RAG(Action):
         cfg = get_config()
         ir_config = cfg.get_section('ir_rag')
         
+        # Parse provider(s) - support both single and multiple providers
+        provider_str = ir_config.get('search', {}).get('provider', 'serpapi')
+        search_providers = None
+        search_provider = RetrievalProvider.SERPAPI
+        
+        if ',' in provider_str:
+            # Multiple providers specified (e.g., "serpapi,gcp_vertex_search")
+            provider_list = [p.strip() for p in provider_str.split(',')]
+            search_providers = []
+            for p in provider_list:
+                try:
+                    search_providers.append(RetrievalProvider(p))
+                except ValueError:
+                    print(f"[IR_RAG][WARN] Unknown provider '{p}', skipping")
+            # Use first provider as primary
+            if search_providers:
+                search_provider = search_providers[0]
+        else:
+            # Single provider
+            try:
+                search_provider = RetrievalProvider(provider_str)
+            except ValueError:
+                print(f"[IR_RAG][WARN] Unknown provider '{provider_str}', using serpapi")
+                search_provider = RetrievalProvider.SERPAPI
+        
         return IRConfig(
-            search_provider=RetrievalProvider(ir_config.get('search', {}).get('provider', 'serpapi')),
+            search_provider=search_provider,
+            search_providers=search_providers,
             max_search_results=ir_config.get('search', {}).get('max_results', 10),
             max_pages_to_visit=ir_config.get('web_scraping', {}).get('max_pages', 5),
             search_location=ir_config.get('search', {}).get('location', 'Hong Kong'),
@@ -819,8 +888,8 @@ class IR_RAG(Action):
     async def _retrieve_information(self, query: str, plan: ExtractionPlan, ctx: Context) -> List[SearchResult]:
         """Retrieve information using configured search provider"""
         
-        if self.config.search_provider == RetrievalProvider.SERPAPI:
-            return await self._serpapi_search(query, plan, ctx)
+        if self.config.search_provider in (RetrievalProvider.SERPAPI, RetrievalProvider.GOOGLE_CUSTOM_SEARCH, RetrievalProvider.GCP_VERTEX_SEARCH):
+            return await self._web_search(query, plan, ctx)
         elif self.config.search_provider == RetrievalProvider.VECTOR_DB:
             return await self._vector_search(query, plan)
         elif self.config.search_provider == RetrievalProvider.HYBRID:
@@ -828,9 +897,22 @@ class IR_RAG(Action):
         else:
             raise ValueError(f"Unsupported search provider: {self.config.search_provider}")
     
-    async def _serpapi_search(self, query: str, plan: ExtractionPlan, ctx: Context) -> List[SearchResult]:
-        """Search using SerpAPI with multiple diverse queries"""
-        print(f"🔍 IR_RAG: Searching with SerpAPI...")
+    async def _web_search(self, query: str, plan: ExtractionPlan, ctx: Context) -> List[SearchResult]:
+        """Search using web search API (SerpAPI, Google Custom Search, or GCP Vertex Search) with multiple diverse queries (batch mode)"""
+        provider_map = {
+            RetrievalProvider.GOOGLE_CUSTOM_SEARCH: "Google Custom Search",
+            RetrievalProvider.GCP_VERTEX_SEARCH: "GCP Vertex AI Search",
+            RetrievalProvider.SERPAPI: "SerpAPI"
+        }
+        
+        # Check if using multiple providers
+        if self.config.search_providers and len(self.config.search_providers) > 1:
+            provider_names = [provider_map.get(p, str(p)) for p in self.config.search_providers]
+            print(f"🔍 IR_RAG: Searching with multiple providers: {', '.join(provider_names)}...")
+            return await self._multi_provider_search(query, plan, ctx)
+        else:
+            provider_name = provider_map.get(self.config.search_provider, "SerpAPI")
+            print(f"🔍 IR_RAG: Searching with {provider_name}...")
 
         # Build multiple search queries from plan
         search_queries = self._build_search_query(query, plan, ctx)
@@ -840,48 +922,132 @@ class IR_RAG(Action):
             print(f"  {i}. {q}")
         print(f"🔍 IR_RAG: Time intent: {ctx.time_context.intent if ctx.time_context else 'None'}")
         
-        # Execute search for each query and collect results
-        all_search_results = []
-        seen_urls = set()  # Deduplicate by URL
+        # Use batch_call_flat to search all queries concurrently
+        try:
+            print(f"🔍 IR_RAG: Executing batch search with {len(search_queries)} queries...")
+            
+            # Get config values for batch search
+            cfg = get_config()
+            concurrent = cfg.get('ir_rag.search.concurrent', 8)
+            qps = cfg.get('ir_rag.search.qps', 5)
+            retries = cfg.get('ir_rag.search.retries', 2)
+            
+            # Execute batch search (synchronous but internally concurrent)
+            raw_results = self.search_tool.batch_call_flat(
+                queries=search_queries,
+                num_results=self.config.max_search_results,
+                location=self.config.search_location,
+                language=self.config.search_language,
+                concurrent=concurrent,
+                qps=qps,
+                retries=retries,
+                tbs="qdr:y"
+            )
+            
+            print(f"🔍 IR_RAG: Batch search returned {len(raw_results)} total results")
+            
+            # Convert raw results to SearchResult objects and deduplicate by URL
+            all_search_results = []
+            seen_urls = set()
+            
+            for result in raw_results:
+                url = result.get('link', '')
+                
+                # Skip if we've already seen this URL
+                if url in seen_urls:
+                    continue
+                
+                seen_urls.add(url)
+                
+                search_result = SearchResult(
+                    title=result.get('title', ''),
+                    snippet=result.get('snippet', ''),
+                    url=url,
+                    source=result.get('source', ''),
+                    result_type=result.get('type', 'organic'),
+                    position=result.get('position', 0),
+                    date=result.get('date'),
+                    confidence=0.8  # Default confidence for SerpAPI results
+                )
+                all_search_results.append(search_result)
+            
+            print(f"🔍 IR_RAG: Retrieved {len(all_search_results)} unique results from {len(search_queries)} queries")
+            return all_search_results
+            
+        except Exception as e:
+            logger.error(f"[IR_RAG][SEARCH] Batch search failed: {e}")
+            return []
+    
+    async def _multi_provider_search(self, query: str, plan: ExtractionPlan, ctx: Context) -> List[SearchResult]:
+        """Search using multiple providers and merge results"""
+        print(f"🔍 IR_RAG: Executing multi-provider search with {len(self.search_tools)} providers...")
         
-        for search_query in search_queries:
+        # Build search queries
+        search_queries = self._build_search_query(query, plan, ctx)
+        print(f"🔍 IR_RAG: Generated {len(search_queries)} search queries for each provider")
+        
+        # Get config values for batch search
+        cfg = get_config()
+        concurrent = cfg.get('ir_rag.search.concurrent', 8)
+        qps = cfg.get('ir_rag.search.qps', 5)
+        retries = cfg.get('ir_rag.search.retries', 2)
+        
+        all_results = []
+        provider_stats = {}
+        
+        # Execute search with each provider
+        for i, search_tool in enumerate(self.search_tools):
+            provider_name = self.config.search_providers[i].value if i < len(self.config.search_providers) else f"Provider {i+1}"
+            
             try:
-                # Execute search using structured results method
-                raw_results = self.search_tool.get_structured_results(
-                    query=search_query,
+                print(f"🔍 IR_RAG: Searching with {provider_name}...")
+                
+                # Execute batch search
+                raw_results = search_tool.batch_call_flat(
+                    queries=search_queries,
                     num_results=self.config.max_search_results,
                     location=self.config.search_location,
-                    language=self.config.search_language
+                    language=self.config.search_language,
+                    concurrent=concurrent,
+                    qps=qps,
+                    retries=retries,
+                    tbs="qdr:y"
                 )
                 
-                # Convert raw results to SearchResult objects and deduplicate
+                provider_stats[provider_name] = len(raw_results)
+                print(f"🔍 IR_RAG: {provider_name} returned {len(raw_results)} results")
+                
+                # Convert to SearchResult objects
                 for result in raw_results:
-                    url = result.get('link', '')
-                    
-                    # Skip if we've already seen this URL
-                    if url in seen_urls:
-                        continue
-                    
-                    seen_urls.add(url)
-                    
                     search_result = SearchResult(
                         title=result.get('title', ''),
                         snippet=result.get('snippet', ''),
-                        url=url,
+                        url=result.get('link', ''),
                         source=result.get('source', ''),
                         result_type=result.get('type', 'organic'),
                         position=result.get('position', 0),
                         date=result.get('date'),
-                        confidence=0.8  # Default confidence for SerpAPI results
+                        confidence=0.8
                     )
-                    all_search_results.append(search_result)
-            
+                    all_results.append(search_result)
+                    
             except Exception as e:
-                logger.error(f"[IR_RAG][SEARCH] Error searching with query '{search_query}': {e}")
-                continue
+                logger.error(f"[IR_RAG][SEARCH] {provider_name} failed: {e}")
+                provider_stats[provider_name] = 0
+                # Continue with other providers even if one fails
         
-        print(f"🔍 IR_RAG: Retrieved {len(all_search_results)} unique results from {len(search_queries)} queries")
-        return all_search_results
+        # Deduplicate by URL
+        seen_urls = set()
+        unique_results = []
+        for result in all_results:
+            if result.url not in seen_urls:
+                seen_urls.add(result.url)
+                unique_results.append(result)
+        
+        print(f"🔍 IR_RAG: Multi-provider search stats: {provider_stats}")
+        print(f"🔍 IR_RAG: Total results: {len(all_results)}, Unique results: {len(unique_results)}")
+        
+        return unique_results
     
     async def _vector_search(self, query: str, plan: ExtractionPlan) -> List[SearchResult]:
         """Search using vector database (placeholder)"""
@@ -893,12 +1059,12 @@ class IR_RAG(Action):
         return []
     
     async def _hybrid_search(self, query: str, plan: ExtractionPlan, ctx: Context) -> List[SearchResult]:
-        """Combine SerpAPI and vector search results"""
-        print(f"🔍 IR_RAG: Hybrid search not fully implemented, using SerpAPI only...")
+        """Combine web search and vector search results"""
+        print(f"🔍 IR_RAG: Hybrid search not fully implemented, using web search only...")
         
-        # For now, just use SerpAPI
+        # For now, just use web search
         # In the future, this would combine results from both sources
-        return await self._serpapi_search(query, plan, ctx)
+        return await self._web_search(query, plan, ctx)
     
     def _build_search_query(self, original_query: str, plan: ExtractionPlan, ctx: Context) -> List[str]:
         """

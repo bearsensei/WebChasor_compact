@@ -7,6 +7,11 @@ import os
 import json
 import requests
 from typing import List, Dict, Any, Union
+import time
+import threading
+import random
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from config_manager import get_config
 
 
 class SerpAPISearch:
@@ -42,12 +47,37 @@ class SerpAPISearch:
     ]
 
     def __init__(self):
+        # API key still from environment (sensitive credential)
         self.api_key = os.getenv('SERPAPI_KEY', '')
         if not self.api_key:
             print("Warning: SERPAPI_KEY environment variable not set")
         
         self.base_url = "https://serpapi.com/search"
+
+        # Load batch & concurrency config from config.yaml
+        cfg = get_config()
+        self.qps = cfg.get('ir_rag.search.qps', 5)               # Max requests per second to SerpAPI
+        self.concurrent = cfg.get('ir_rag.search.concurrent', 8) # Max concurrent requests
+        self.retries = cfg.get('ir_rag.search.retries', 2)       # Per-request retries
+        self.timeout_s = cfg.get('ir_rag.web_scraping.timeout', 30)  # Per-request timeout seconds
+
+        # Shared state for simple client-side rate limiting across threads
+        self._rl_lock = threading.Lock()
+        self._last_call_ts = 0.0
+        self._min_interval = 1.0 / max(1, self.qps)
     
+    def _rate_limit(self):
+        """
+        Simple client-side QPS limiter shared across threads.
+        Ensures at most `self.qps` requests per second.
+        """
+        with self._rl_lock:
+            now = time.monotonic()
+            wait = (self._last_call_ts + self._min_interval) - now
+            if wait > 0:
+                time.sleep(wait)
+            self._last_call_ts = time.monotonic()
+
     def call(self, params: Union[str, dict], **kwargs) -> str:
         """Execute search and return formatted results"""
         try:
@@ -81,19 +111,19 @@ class SerpAPISearch:
             return f"SerpAPI Search Error: {str(e)}"
 
     def get_structured_results(self, query: str, num_results: int = 10, location: str = 'Hong Kong', 
-                             language: str = 'zh-cn', engine: str = 'google') -> List[Dict[str, Any]]:
+                             language: str = 'zh-cn', engine: str = 'google', tbs: str = None) -> List[Dict[str, Any]]:
         """Get structured search results for IR_RAG integration"""
         try:
             if not self.api_key:
                 print("Error: SERPAPI_KEY not configured")
                 return []
             
-            return self._execute_search(query, num_results, location, language, engine)
+            return self._execute_search(query, num_results, location, language, engine, tbs)
         except Exception as e:
             print(f"SerpAPI Structured Search Error: {e}")
             return []
 
-    def _execute_search(self, query: str, num_results: int, location: str, language: str, engine: str = 'google') -> List[Dict[str, Any]]:
+    def _execute_search(self, query: str, num_results: int, location: str, language: str, engine: str = 'google', tbs: str = None) -> List[Dict[str, Any]]:
         """Execute the actual SerpAPI search"""
         
         # Prepare search parameters
@@ -108,10 +138,14 @@ class SerpAPISearch:
             'safe': 'active'  # Enable safe search
         }
         
+        # Add time-based filtering if provided
+        if tbs:
+            search_params['tbs'] = tbs
+        
         print(f"SerpAPI Search: '{query}' (engine: {engine}, location: {location}, results: {num_results})")
         
         try:
-            response = requests.get(self.base_url, params=search_params, timeout=30)
+            response = requests.get(self.base_url, params=search_params, timeout=self.timeout_s)
             response.raise_for_status()
             
             data = response.json()
@@ -246,19 +280,124 @@ class SerpAPISearch:
         
         return formatted
 
+    def _execute_with_retry(self, query: str, num_results: int, location: str, language: str, engine: str, tbs: str = None) -> List[Dict[str, Any]]:
+        """
+        Execute a single SerpAPI search with retries, backoff, and client-side rate limiting.
+        """
+        attempt = 0
+        backoff = 0.6
+        while True:
+            try:
+                self._rate_limit()
+                return self._execute_search(query, num_results, location, language, engine, tbs)
+            except Exception as e:
+                # _execute_search already catches RequestException/JSON errors and returns []
+                # If we reach here due to an unexpected exception, treat as failure to retry.
+                if attempt >= self.retries:
+                    print(f"[SerpAPI] Retry exhausted for query='{query}': {e}")
+                    return []
+                sleep_s = backoff * (1.0 + random.random() * 0.25)
+                time.sleep(sleep_s)
+                backoff *= 2
+                attempt += 1
+
+    def batch_call(
+        self,
+        queries: List[str],
+        num_results: int = 10,
+        location: str = 'Hong Kong',
+        language: str = 'zh-cn',
+        engine: str = 'google',
+        tbs: str = None,
+        concurrent: int = None,
+        qps: int = None,
+        retries: int = None
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """
+        Batch search for multiple queries (SerpAPI does not support true server-side batching).
+        This method performs client-side concurrent requests with QPS limiting and retries.
+
+        Returns a mapping: { query: [result_dict, ...] }
+        """
+        if not isinstance(queries, list) or not queries:
+            return {}
+
+        # Override runtime knobs if provided
+        if concurrent is not None: self.concurrent = int(concurrent)
+        if qps is not None:
+            self.qps = int(qps)
+            self._min_interval = 1.0 / max(1, self.qps)
+        if retries is not None: self.retries = int(retries)
+
+        out: Dict[str, List[Dict[str, Any]]] = {}
+
+        def worker(q: str) -> None:
+            try:
+                res = self._execute_with_retry(q, num_results, location, language, engine, tbs)
+                out[q] = res
+            except Exception as e:
+                print(f"[SerpAPI] Worker error for '{q}': {e}")
+                out[q] = []
+
+        # Thread pool with bounded concurrency
+        with ThreadPoolExecutor(max_workers=self.concurrent) as ex:
+            futs = {ex.submit(worker, q): q for q in queries}
+            for fut in as_completed(futs):
+                _ = futs[fut]  # ensure exceptions are surfaced
+                try:
+                    fut.result()
+                except Exception as e:
+                    q = futs[fut]
+                    print(f"[SerpAPI] Future error for '{q}': {e}")
+                    out[q] = out.get(q, [])
+
+        return out
+
+    def batch_call_flat(
+        self,
+        queries: List[str],
+        num_results: int = 10,
+        location: str = 'Hong Kong',
+        language: str = 'zh-cn',
+        engine: str = 'google',
+        tbs: str = None,
+        **kwargs
+    ) -> List[Dict[str, Any]]:
+        """
+        Batch search and flatten all results into a single list with `query` annotated.
+        """
+        mapping = self.batch_call(queries, num_results, location, language, engine, tbs, **kwargs)
+        flat: List[Dict[str, Any]] = []
+        for q, items in mapping.items():
+            for it in items:
+                it2 = dict(it)  # shallow copy
+                it2["query"] = q
+                flat.append(it2)
+        return flat
+
 # Test function
 def test_serpapi():
     """Test SerpAPI functionality"""
     search_tool = SerpAPISearch()
-    
-    # Test query
+
+    # Single query test (existing behavior)
     test_query = "香港天气"
     result = search_tool.call({'query': test_query, 'num_results': 5})
-    
     print("=" * 60)
-    print("SerpAPI Test Results:")
+    print("SerpAPI Test Results (single):")
     print("=" * 60)
     print(result)
 
+    # Batch queries test (new)
+    test_queries = ["香港天气", "香港股市 指数", "香港大学 校长 任期"]
+    mapping = search_tool.batch_call(test_queries, num_results=5, location="Hong Kong", language="zh-cn")
+    print("=" * 60)
+    print("SerpAPI Test Results (batch):")
+    print("=" * 60)
+    for q, items in mapping.items():
+        print(f"[{q}] -> {len(items)} items")
+        if items[:1]:
+            print(f"  First title: {items[0].get('title')}")
+
 if __name__ == "__main__":
-    test_serpapi() 
+    test_serpapi()
