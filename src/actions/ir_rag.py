@@ -581,64 +581,191 @@ class InformationExtractor:
             logger.error(f"Extraction failed for {task.variable_name}: {e}")
             return self._fallback_extract(task, passages)
     
+    def _detect_language(self, text: str) -> str:
+        """Detect if text is primarily Chinese or English"""
+        if not text:
+            return "en"
+        chinese_chars = len(re.findall(r'[\u4e00-\u9fff]', text))
+        total_chars = len(text.strip())
+        if total_chars == 0:
+            return "en"
+        return "zh" if chinese_chars / total_chars > 0.3 else "en"
+    
+    def _extract_core_entities(self, question: str) -> List[str]:
+        """
+        Extract core entities from the question for validation.
+        Simple heuristic-based extraction (can be enhanced with NER later).
+        """
+        # Remove common question words
+        question_words = ['what', 'when', 'where', 'who', 'why', 'how', 'which', 
+                         '什么', '何时', '哪里', '谁', '为什么', '怎么', '哪个', '多少']
+        
+        # Tokenize and filter
+        import jieba
+        words = list(jieba.cut(question))
+        
+        # Filter out question words, punctuation, and short words
+        entities = []
+        for word in words:
+            word_lower = word.lower().strip()
+            if (len(word) >= 2 and 
+                word_lower not in question_words and 
+                not word.strip() in '，。？！、；：""''（）【】《》' and
+                not word.isdigit()):
+                entities.append(word)
+        
+        # Return top entities (limit to avoid too many)
+        return entities[:5]
+    
     async def _llm_extract(self, task: PlanTask, passages: List[ContentPassage]) -> ExtractedVariable:
         """Use LLM to extract information"""
-        # Combine top passages
-        combined_text = "\n\n".join([f"Source: {p.source_url}\n{p.text}" for p in passages[:3]])
+        # Get max passages from config (default to 20 if not set)
+        cfg = get_config()
+        max_passages = cfg.get('ir_rag.content.max_passages_per_task', 20)
         
-        # Build extraction prompt
-        prompt = f"""
-        Extract the following information from the provided text passages:
+        # Combine top passages (use config value)
+        combined_text = "\n\n".join([f"Source {i+1}: {p.source_url}\n{p.text}" for i, p in enumerate(passages[:max_passages])])
         
-        QUESTION: {task.fact}
-        VARIABLE: {task.variable_name}
-        CATEGORY: {task.category}
+        # Extract core entities from the question for validation
+        core_entities = self._extract_core_entities(task.fact)
+        entities_str = ", ".join(core_entities) if core_entities else "N/A"
         
-        TEXT PASSAGES:
-        {combined_text}
+        # Detect language and build appropriate prompt
+        lang = self._detect_language(task.fact + " " + combined_text[:500])
         
-        Please provide a JSON response with:
-        {{
-            "value": "extracted information",
-            "confidence": 0.8,
-            "reasoning": "brief explanation of why this answer is correct"
-        }}
+        if lang == "zh":
+            # Chinese prompt
+            prompt = f"""从提供的文本段落中提取以下信息：
+
+问题: {task.fact}
+变量名: {task.variable_name}
+类别: {task.category}
+核心实体: {entities_str}
+
+文本段落:
+{combined_text}
+
+**关键要求**:
+1. 仅从提供的文本段落中提取信息
+2. 不要使用你自己的知识或做假设
+3. 提取的信息必须与核心实体相关
+4. 如果多个段落提供不同信息，优先选择最具体和最新的
+5. 尽可能引用原文支持你的提取
+
+请提供 JSON 格式的响应（必须是有效的 JSON，不要包含任何其他文本）:
+{{
+    "value": "提取的信息（如果未找到则为 null）",
+    "confidence": 0.0-1.0,
+    "reasoning": "简要解释并注明来源（例如：'来源 2 指出...'）",
+    "source_quote": "支持此提取的原文引用"
+}}
+
+如果在段落中未找到信息，设置 confidence 为 0.0，value 为 null。
+如果信息与核心实体无关，设置 confidence 为 0.0，value 为 null。
+"""
+        else:
+            # English prompt
+            prompt = f"""Extract the following information from the provided text passages:
+
+QUESTION: {task.fact}
+VARIABLE: {task.variable_name}
+CATEGORY: {task.category}
+CORE ENTITIES: {entities_str}
+
+TEXT PASSAGES:
+{combined_text}
+
+**CRITICAL REQUIREMENTS**:
+1. Extract information ONLY from the provided text passages above
+2. DO NOT use your own knowledge or make assumptions
+3. The extracted information MUST mention or relate to the CORE ENTITIES listed above
+4. If multiple passages provide different information, prioritize the most specific and recent one
+5. Quote the original text when possible to support your extraction
+
+Please provide a JSON response (must be valid JSON, no other text):
+{{
+    "value": "extracted information (or null if not found)",
+    "confidence": 0.0-1.0,
+    "reasoning": "brief explanation with source reference (e.g., 'Source 2 states...')",
+    "source_quote": "direct quote from the passage supporting this extraction"
+}}
+
+If the information is not found in the passages, set confidence to 0.0 and value to null.
+If the information does not relate to the CORE ENTITIES, set confidence to 0.0 and value to null.
+"""
         
-        If the information is not found, set confidence to 0.0 and value to null.
-        """
+        # Build system message based on language
+        if lang == "zh":
+            system_msg = "你是一个专业的信息提取专家。你必须只返回有效的 JSON 格式，不要包含任何其他文本。从文本段落中提取准确的事实信息。"
+        else:
+            system_msg = "You are an expert information extractor. You MUST respond with valid JSON only. Do not include any text before or after the JSON. Extract precise, factual information from text passages."
         
-        response = self.client.chat.completions.create(
-            model=self.model_name,
-            messages=[
-                {"role": "system", "content": "You are an expert information extractor. Extract precise, factual information from text passages."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.1,
-            max_tokens=500
-        )
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model_name,
+                messages=[
+                    {"role": "system", "content": system_msg},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.1,
+                max_tokens=1500,  # Increased from 500 to 1500 to avoid truncation
+                response_format={"type": "json_object"}  # Force JSON response (OpenAI API)
+            )
+        except Exception as api_error:
+            # If response_format not supported, try without it
+            print(f"[EXTRACTOR][WARN] response_format not supported, retrying without it: {api_error}")
+            response = self.client.chat.completions.create(
+                model=self.model_name,
+                messages=[
+                    {"role": "system", "content": system_msg},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.1,
+                max_tokens=1500  # Increased from 500 to 1500 to avoid truncation
+            )
         
-        result_text = response.choices[0].message.content.strip()
+        # Check for None response
+        result_text = response.choices[0].message.content
+        if result_text is None:
+            print(f"[EXTRACTOR][ERROR] LLM returned None for {task.variable_name}")
+            print(f"[EXTRACTOR][ERROR] Response finish_reason: {response.choices[0].finish_reason}")
+            if response.choices[0].finish_reason == "length":
+                print(f"[EXTRACTOR][ERROR] Response was truncated due to max_tokens limit!")
+                print(f"[EXTRACTOR][ERROR] Consider increasing max_tokens in the code")
+            return self._fallback_extract(task, passages)
+        
+        result_text = result_text.strip()
         
         try:
             result_data = json.loads(result_text)
+            
+            # Log extraction details for debugging
+            if cfg.is_decision_logging_enabled('ir_rag'):
+                print(f"[EXTRACTOR][DEBUG] Extracted value: {result_data.get('value')}")
+                print(f"[EXTRACTOR][DEBUG] Confidence: {result_data.get('confidence')}")
+                print(f"[EXTRACTOR][DEBUG] Reasoning: {result_data.get('reasoning')}")
+                if result_data.get('source_quote'):
+                    print(f"[EXTRACTOR][DEBUG] Source quote: {result_data.get('source_quote')[:100]}...")
+            
             return ExtractedVariable(
                 variable_name=task.variable_name,
                 value=result_data.get("value"),
                 confidence=float(result_data.get("confidence", 0.0)),
-                provenance=[p.source_url for p in passages],
+                provenance=[p.source_url for p in passages[:max_passages]],
                 extraction_method="llm",
-                raw_passages=[p.text for p in passages]
+                raw_passages=[p.text for p in passages[:max_passages]]
             )
-        except json.JSONDecodeError:
-            # Fallback if JSON parsing fails
-            return ExtractedVariable(
-                variable_name=task.variable_name,
-                value=result_text,
-                confidence=0.5,
-                provenance=[p.source_url for p in passages],
-                extraction_method="llm_fallback",
-                raw_passages=[p.text for p in passages]
-            )
+        except json.JSONDecodeError as e:
+            # JSON parsing failed - log details for debugging
+            print(f"[EXTRACTOR][ERROR] JSON parse failed for {task.variable_name}: {e}")
+            print(f"[EXTRACTOR][ERROR] Raw response (first 300 chars): {result_text[:300]}")
+            print(f"[EXTRACTOR][ERROR] This usually means LLM returned non-JSON format")
+            print(f"[EXTRACTOR][ERROR] Language detected: {lang}")
+            
+            # Try to extract information from the text response anyway
+            # Use fallback extraction as it's more reliable than raw text
+            print(f"[EXTRACTOR][FALLBACK] Using fallback extraction for {task.variable_name}")
+            return self._fallback_extract(task, passages)
     
     def _fallback_extract(self, task: PlanTask, passages: List[ContentPassage]) -> ExtractedVariable:
         """Fallback extraction using simple heuristics"""
@@ -1171,9 +1298,24 @@ class IR_RAG(Action):
         # Build materials for synthesis
         materials = self._build_synthesis_materials(plan, extracted_vars, search_results)
         
+        # Get current time information
+        import datetime
+        current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        current_date = datetime.datetime.now().strftime("%Y年%m月%d日")
+        
+        # Build time context string
+        time_info = f"Current time: {current_time} ({current_date})"
+        if ctx.time_context:
+            time_info += f"\nTime intent: {ctx.time_context.intent}"
+            if ctx.time_context.window and ctx.time_context.window[1]:
+                time_info += f"\nTime window: {ctx.time_context.window[0]} to {ctx.time_context.window[1]}"
+        
         # Create synthesis prompt
         synthesis_prompt = f"""
-        Based on the extracted information, provide a comprehensive answer to: {ctx.query}.MUST use all retrieved information, no missing information. Be as comprehensive as possible. Add background information if there is any possible.
+        Based on the extracted information, provide a comprehensive answer to: {ctx.query}. You MUST use all retrieved information, no missing information. Be as comprehensive as possible. Add background information if there is any possible.
+        
+        **IMPORTANT TIME CONTEXT**:
+        {time_info}
         
         Use the following extracted information:
         {materials}
@@ -1185,7 +1327,7 @@ class IR_RAG(Action):
         4. For key facts/statistics/comparisons, use tables or lists instead of long paragraphs
         5. Mix paragraph text with structured formats (lists, tables) for better readability
         6. Factual accuracy based on the sources
-        7. Time context: {ctx.time_context.intent}. Notice the time context is important. Filter the information based on the time context.
+        7. **Time awareness**: The current time is {current_time}. Filter and present information based on this current time. Distinguish between past, present, and future events clearly.
         8. Include a "References" or "参考来源" section at the very end listing all sources
         9. MUST use all retrieved information, no missing information.
         """
@@ -1201,14 +1343,14 @@ class IR_RAG(Action):
                 "language": "auto",  # Let synthesizer detect language
                 "tone": "factual, authoritative",
                 "temperature": ir_rag_temperature,  # Use config value
-                "instruction_hint": "Provide a comprehensive answer with clear sections. Use diverse formatting: bullet points, numbered lists, and tables where appropriate. Mix paragraphs with structured formats for better readability. DO NOT use citation numbers [1], [2], etc. in the main text. Only include a reference list at the end."
+                "instruction_hint": f"Provide a comprehensive answer with clear sections. Use diverse formatting: bullet points, numbered lists, and tables where appropriate. Mix paragraphs with structured formats for better readability. DO NOT use citation numbers [1], [2], etc. in the main text. Only include a reference list at the end.\n\n**CRITICAL**: The current time is {current_time} ({current_date}). Be aware of this when discussing events, dates, and timelines. Clearly distinguish between past, present, and future."
             }
             
             response = await toolset.synthesizer.generate(
                 category="INFORMATION_RETRIEVAL",
                 style_key="auto",  # 使用 auto 启用自动语言检测和样式选择
                 constraints=constraints,
-                materials=f"Query: {ctx.query}\n\nExtracted Information:\n{materials}",
+                materials=f"Query: {ctx.query}\n\n**Current Time**: {current_time} ({current_date})\n\nExtracted Information:\n{materials}",
                 task_scaffold=None
             )
         else:

@@ -28,7 +28,7 @@ ir_rag:
   content:
     chunk_overlap: 50           # Overlap between text chunks in characters
     chunk_size: 500             # Size of text chunks in characters
-    max_passages_per_task: 3    # Maximum passages to retrieve per task
+    max_passages_per_task: 20   # Maximum passages to retrieve per task (increased from 7 to 20 for better coverage)
     min_passage_length: 20      # Minimum length for valid passages
   
   # Information extraction settings
@@ -41,7 +41,7 @@ ir_rag:
   # Content ranking algorithm settings
   ranking:
     algorithm: keyword_matching           # Ranking algorithm type
-    entity_weight: 2.0                   # Weight for entity matches
+    entity_weight: 3.5                   # Weight for entity matches (increased to 3.5 for stronger entity prioritization)
     keyword_weight: 1.0                  # Weight for keyword matches
     length_penalty_threshold: 20         # Threshold for length penalty
     question_word_weight: 0.5           # Weight for question words
@@ -55,7 +55,7 @@ ir_rag:
     max_results: 20        # Maximum search results to return
     # Single provider: 'serpapi', 'google_custom_search', or 'gcp_vertex_search'
     # Multiple providers (comma-separated): 'serpapi,gcp_vertex_search' (merges results from all)
-    provider: serpapi,gcp_vertex_search
+    provider: serpapi
     safe_search: true      # Enable safe search filtering
     # Batch search concurrency settings (for multiple queries)
     concurrent: 2          # Max concurrent searches in batch mode (reduced for Google API limits)
@@ -343,6 +343,38 @@ router:
 geo_query:
   enable_enhancement: true  # Enable LLM-based response enhancement for friendlier output
   enhancement_temperature: 0.2  # Temperature for enhancement (higher = more creative)
+
+# Response length control by category
+response_length:
+  # Information Retrieval responses
+  information_retrieval:
+    max_tokens: 8000          # Maximum tokens for IR_RAG responses (comprehensive analysis)
+    temperature: 0.8          # Temperature for IR_RAG
+    
+  # Knowledge Reasoning responses  
+  knowledge_reasoning:
+    max_tokens: 6000          # Maximum tokens for reasoning responses (detailed analysis)
+    temperature: 0.7          # Temperature for reasoning
+    
+  # Geographic Query responses
+  geo_query:
+    max_tokens: 500           # Maximum tokens for geo queries (concise, friendly)
+    temperature: 0.3          # Temperature for geo queries
+    
+  # Conversational Followup responses
+  conversational_followup:
+    max_tokens: 300           # Maximum tokens for simple followups (brief)
+    temperature: 0.6          # Temperature for followups
+    
+  # Task Productivity responses
+  task_productivity:
+    max_tokens: 2000          # Maximum tokens for productivity tasks
+    temperature: 0.0          # Deterministic for productivity
+    
+  # Default fallback
+  default:
+    max_tokens: 3000          # Default max tokens
+    temperature: 0.7          # Default temperature
 
 # System-wide configuration
 system:

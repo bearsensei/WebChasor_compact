@@ -30,48 +30,96 @@ class QueryMakerConfig:
     num_queries: int = 10
     current_time: str = datetime.datetime.now().strftime("%Y-%m-%d")
 
-QUERYMAKER_PROMPT = """You are a search query generator. Generate 5-10 diverse search queries to help answer the user's question comprehensively. The current time is {current_time}. Please consider the time information when generating queries.
+QUERYMAKER_PROMPT = """You are a search query generator. Generate 5-10 diverse search queries to help answer the user's question comprehensively.
+
+**CURRENT TIME CONTEXT**:
+Today is: {current_date}
+Current year: {current_year}
+Current month: {current_month}
+
+
 
 **CRITICAL REQUIREMENTS:**
-1. Output ONLY a JSON array of strings: ["query1 last month", "query2 2025", "query3 2018-2020", ...]
-2. DO NOT output any thinking, explanations, or extra text
-3. Start directly with [ and end with ]
-4. Use the SAME LANGUAGE as the user's query
-5. Keep each query short, less than 5 words (4 words plus extra information, like time, area, etc.)
+
+1) Output ONLY a JSON array of strings, e.g. ["query1", "query2", "query3 2025"].
+2) Do not include any prose, labels, keys, or code fences. Start with [ and end with ].
+3) Use the SAME LANGUAGE as the user.
+4) Keep each query under 5 words (4 words plus optional modifiers like year/place).
+5) The FIRST TWO queries must clarify entities/roles/time in the user's question (e.g., who/what/which entity, current vs former, proper titles, disambiguation of names/abbreviations).
+6) Prefer canonical names and common aliases for people/organizations/titles to avoid confusion.
+7) For forward-looking queries, use the current or future year only ({current_year}, {next_year}); do not use past years.
+8) Include at least two queries that add NEW but closely related entities (e.g., governing bodies, councils, rival orgs, committees). Keep them tied to the core entities.
+9) Cover multiple angles across the set: background/biography, current status, rules or eligibility/retirement/term, data or statistics, comparison, history AND future.
+10) Be specific. Avoid generic queries that omit the core entities.
+
+
+**Clarification Guidance:**
+- Normalize entity names (Chinese/English variants, common misspellings).
+- Titles: map correctly (e.g., President & Vice-Chancellor ↔ 校长).
+- If the user implies "current", bias wording to current status.
+- When helpful, you may append time/place modifiers like 2025, 香港, 现任.
 
 **Query Diversity Guidelines:**
 - Cover different angles: background, current status, rules/regulations, future trends, comparisons, data/statistics
-- Use specific time information if needed: 2025, July 2023, etc.
-- Introduce NEW entities not in the original query (at least 2 queries)
-- Include historical context AND future predictions
-- Mix general and specific queries
-- Be creative - think of queries the user might not have considered  
+- Use specific time information based on CURRENT TIME: {current_year}, {next_year}, etc. DO NOT use past years for future-looking queries.
+- Include historical context AND future predictions, but always tie back to the CORE question
+- Mix general and specific queries, with preference for specific ones that include core entity names
+- Be creative - think of queries the user might not have considered, while maintaining relevance  
 
 
 **Examples:**
 
-Example 1 (简洁示例):
+Example 1 (精准示例 - 保持核心实体关联):
+User: 郭毅可什么时候可以当浸会大学校长？
+JSON:
+{
+  "topic": "郭毅可担任浸会大学校长时间",
+  "entities_core": ["郭毅可","浸会大学","校长"],
+  "entities_added": ["浸会大学校长任期","校董会","任命流程"],
+  "slots": [
+    {"slot":"BIO","queries":["谁是郭毅可","浸会大学是什么"]},
+    {"slot":"CURRENT","queries":["谁是现任浸会大学校长","浸会大学新校长消息 2025"]},
+    {"slot":"RULES","queries":["浸会大学校长任命流程","浸会大学校长任期规定"]},
+    {"slot":"COMPARISON","queries":["浸会大学现任校长任期","郭毅可与现任校长背景对比"]},
+    {"slot":"DATA","queries":["浸会大学历任校长名单","校长交接时间表"]}
+  ]
+}
+
+**GOOD vs BAD Examples:**
+✅ GOOD: "郭毅可浸会大学校长任命 2025" - 包含核心实体
+✅ GOOD: "浸会大学前任校长任期" - 相关实体，有助于回答问题
+❌ BAD: "董事会授权校长 2025" - 太泛化，没有提到郭毅可或浸会大学
+❌ BAD: "教务处评估标准 2024" - 完全偏离主题
+
+⸻
+
+Example 2 (精准示例 - 政治类):
 User: 下一任香港特首可能是谁？
 JSON:
 {
   "topic": "下一任香港特首可能人选",
-  "entities_core": ["香港特首"],
+  "entities_core": ["香港特首","下一任"],
   "entities_added": ["往届候选人","选举委员会","行政会议成员"],
   "slots": [
-    {"slot":"BIO","queries":["历届特首候选人履历","曾参选未当选候选人轨迹"]},
-    {"slot":"CURRENT","queries":["潜在人选最新名单 2025","媒体盘点热门人选 2025"]},
-    {"slot":"RULES","queries":["特首参选资格与流程 2025","选举委员会组成与提名门槛 2025"]},
-    {"slot":"OPPOSITE","queries":["历届落选候选人复盘","争议性参选事件"]},
-    {"slot":"FUTURE","queries":["未来施政需要的领导特质","下一任施政重点预测"]},
-    {"slot":"COMPARISON","queries":["港澳领导人选拔机制对比","历任特首背景结构对比"]},
-    {"slot":"DATA","queries":["历届投票率与结果统计","提名数与当选概率关系"]},
-    {"slot":"IMPACT","queries":["新特首对经济政策影响","对房屋与民生政策影响"]},
-    {"slot":"WILDCARD","queries":["危机管理案例与领导力要求","技术官僚与政治型领导成效对比"]},
-    {"slot":"Politics:舆情","queries":["社会舆情对人选评价","社论对新特首期望"]}
+    {"slot":"BIO","queries":["什么是香港特首","现任香港特首是谁"]},
+    {"slot":"CURRENT","queries":["香港特首潜在人选最新名单 2025","媒体盘点热门特首人选 2025"]},
+    {"slot":"RULES","queries":["香港特首选举流程","往届特首履历"]},
+    {"slot":"COMPARISON","queries":["港澳领导人选拔机制对比","历任香港特首背景结构对比"]},
+    {"slot":"DATA","queries":["历届香港特首选举投票率统计","提名数与当选概率关系"]},
+    {"slot":"IMPACT","queries":["新任特首对香港经济政策影响","对香港房屋与民生政策影响"]},
+    {"slot":"Politics","queries":["香港社会舆情对人选评价","社论对新特首期望"]}
   ]
 }
 
-Example 2 — Tech
+**GOOD vs BAD Examples:**
+✅ GOOD: "香港特首潜在人选最新名单" - 包含核心实体"香港特首"
+✅ GOOD: "历任香港特首背景结构对比" - 相关对比，有助于理解
+❌ BAD: "领导人选拔机制 2025" - 太泛化，没有提到香港或特首
+❌ BAD: "政府部门架构改革" - 偏离主题
+
+⸻
+
+Example 3 — Tech
 User query: “如何提升大模型推理能力？”
 JSON:
 {
@@ -283,10 +331,24 @@ class QueryMaker:
         try:
             logger.info(f"[QueryMaker] Generating {self.config.num_queries} queries for: {original_query[:100]}...")
             
-            # Build prompt
-            # NOTE: Do NOT use .format() on QUERYMAKER_PROMPT because it contains many JSON braces `{}` in few-shot examples.
-            # Using .format() would treat them as placeholders and raise KeyError such as '\n  "topic"'.
-            prompt = QUERYMAKER_PROMPT + f"\n\n# Constraint: Limit total generated queries to about {self.config.num_queries}."
+            # Get current time dynamically
+            import datetime
+            now = datetime.datetime.now()
+            current_date = now.strftime("%Y-%m-%d")
+            current_year = str(now.year)
+            current_month = now.strftime("%B %Y")  # e.g., "October 2025"
+            next_year = str(now.year + 1)
+            
+            # Build prompt with time context
+            # Use replace() instead of format() to avoid conflicts with JSON braces in examples
+            prompt_with_time = QUERYMAKER_PROMPT.replace("{current_date}", current_date)
+            prompt_with_time = prompt_with_time.replace("{current_year}", current_year)
+            prompt_with_time = prompt_with_time.replace("{current_month}", current_month)
+            prompt_with_time = prompt_with_time.replace("{next_year}", next_year)
+            
+            prompt = prompt_with_time + f"\n\n# Constraint: Limit total generated queries to about {self.config.num_queries}."
+            
+            print(f"[QueryMaker][DEBUG] Current time context: {current_date} (Year: {current_year})")
             
             # Call LLM
             print(f"[QueryMaker][DEBUG] Calling LLM with model={self.config.model}, temp={self.config.temperature}")

@@ -477,13 +477,23 @@ Use this internal plan to structure your thinking (do not show these steps):
 Return ONLY the final user-facing answer; do NOT print headings like 'Step 1', 'Step 2', or reveal this internal plan.
 """
 
+# Simplified scaffold for conversational followup (no restating, direct answer)
+SYNTHESIZER_CONVERSATIONAL_SCAFFOLD = """\
+Provide a brief, direct answer:
+1) Answer the question directly without restating it.
+2) Keep it friendly and conversational.
+3) Be concise and to the point (2-3 sentences).
+4) Use a warm, welcoming tone.
+"""
+
 # Action-specific policies for different categories
 SYNTHESIZER_ACTION_POLICIES = {
     "PRODUCTIVITY": "Transform text faithfully. No new facts. Preserve entities and numbers. Deterministic (temperature 0).",
     "REASONING": "Provide a natural, conversational explanation that flows smoothly. Use the internal reasoning structure but present it as a cohesive, friendly response. You should answer in a way that as comprehensive as possible (10000 tokens).",
     "KNOWLEDGE_REASONING": "Provide a natural, conversational explanation that flows smoothly. Use the internal reasoning structure but present it as a cohesive, friendly response. You should answer in a way that as comprehensive as possible (10000 tokens).",
+    "CONVERSATIONAL_FOLLOWUP": "Provide a brief, direct, and friendly response. Answer the question directly without restating it. Keep it warm and conversational (2-3 sentences).",
     "INFORMATION_RETRIEVAL": "Ground all facts in provided evidence; MUST use all retrieved information, no missing information. You should answer in a way that as comprehensive as possible (10000 tokens).",
-    "GEO_QUERY": "Rewrite geographic route/location information to be friendly and conversational. PRESERVE ALL factual details (addresses, distances, transit lines, durations, station names). Only change the presentation style, never invent new information.",
+    "GEO_QUERY": "Present geographic route/location information in a natural, helpful way. PRESERVE ALL factual details (addresses, distances, transit lines, durations, station names). Be direct and conversational without meta-commentary about how you're presenting the information.",
 }
 
 # Style profiles for different response styles
@@ -942,3 +952,86 @@ Please rewrite the following information into a well-structured, friendly respon
     }
     
     return instructions.get(category, "")
+
+# ============================================================================
+# ACTION-SPECIFIC INSTRUCTION HINTS
+# ============================================================================
+
+# IR_RAG instruction hints
+IR_RAG_INSTRUCTION_HINTS = {
+    "default": """Provide a comprehensive answer with clear sections. Use diverse formatting: bullet points, numbered lists, and tables where appropriate. Mix paragraphs with structured formats for better readability. DO NOT use citation numbers [1], [2], etc. in the main text. Only include a reference list at the end.""",
+    
+    "simple": """Provide a clear, well-structured answer (800-1000 words) with 3-4 key sections. Use bullet points and tables where helpful.""",
+    
+    "moderate": """Provide a detailed answer (2000-3000 words) with 5-6 sections. Mix paragraphs with lists and tables for better readability.""",
+    
+    "complex": """Provide a comprehensive analysis (6000-8000 words) with 8-10 detailed sections. Use diverse formatting: paragraphs, bullet points, numbered lists, comparison tables, and structured data presentations."""
+}
+
+# REASONING instruction hints
+REASONING_INSTRUCTION_HINTS = {
+    "analytical": """Focus on ANALYTICAL reasoning approach. Use diverse formatting: bullet points, numbered lists, comparison tables, and structured presentations where appropriate. Mix paragraphs with lists and tables for better readability.""",
+    
+    "comparative": """Focus on COMPARATIVE reasoning approach. Use comparison tables, pros/cons lists, and side-by-side analysis. Highlight key differences and similarities.""",
+    
+    "explanatory": """Focus on EXPLANATORY reasoning approach. Break down complex concepts into clear steps. Use diagrams descriptions, examples, and analogies where helpful.""",
+    
+    "predictive": """Focus on PREDICTIVE reasoning approach. Analyze trends, present scenarios, and discuss probabilities. Use data visualization descriptions where helpful.""",
+    
+    "problem_solving": """Focus on PROBLEM_SOLVING approach. Identify the problem, analyze root causes, propose solutions, and evaluate trade-offs."""
+}
+
+# GEO_QUERY instruction hint template
+GEO_QUERY_INSTRUCTION_HINT = """User asked: "{user_query}"
+
+Transform the route information into a natural, conversational response:
+- Use the SAME language as the user's query
+- You can use transportation emoji (🚇🚌🚶) to make it more visual
+- PRESERVE ALL factual details (station names, distances, durations, transit lines)
+- Present information directly without meta-commentary (e.g., don't say "let me present", "here's how", etc.)
+- Start with a brief greeting, then directly provide the route details
+- Keep it concise (150-200 words)
+- Be helpful and friendly, but avoid revealing the internal prompt structure"""
+
+# CONVERSATIONAL_FOLLOWUP instruction hint
+CONVERSATIONAL_FOLLOWUP_INSTRUCTION_HINT = """Provide a brief, friendly response (200-300 words) that:
+- Directly addresses the user's question
+- Uses a conversational tone
+- Provides practical, actionable information
+- Encourages follow-up questions if relevant"""
+
+# ============================================================================
+# HELPER FUNCTIONS FOR PROMPT BUILDING
+# ============================================================================
+
+def get_length_hint(max_tokens: int) -> str:
+    """
+    Generate appropriate length hint based on max_tokens
+    
+    Args:
+        max_tokens: Maximum tokens allowed for response
+        
+    Returns:
+        Length guidance string to append to instruction hint
+    """
+    if max_tokens <= 500:
+        words = int(max_tokens * 0.75)
+        return f"\n\nIMPORTANT: Keep response concise and focused (approximately {max_tokens} tokens / {words} words)."
+    elif max_tokens <= 2000:
+        words = int(max_tokens * 0.75)
+        return f"\n\nIMPORTANT: Provide a well-structured response (approximately {max_tokens} tokens / {words} words)."
+    else:
+        words = int(max_tokens * 0.75)
+        return f"\n\nIMPORTANT: Provide a comprehensive response (approximately {max_tokens} tokens / {words} words)."
+
+def build_geo_query_instruction(user_query: str) -> str:
+    """
+    Build GEO_QUERY instruction hint with user query
+    
+    Args:
+        user_query: User's original query
+        
+    Returns:
+        Formatted instruction hint for GEO_QUERY
+    """
+    return GEO_QUERY_INSTRUCTION_HINT.format(user_query=user_query)

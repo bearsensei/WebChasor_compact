@@ -379,10 +379,18 @@ class GEO_QUERY(Action):
         print(f"[GEO_QUERY][ENHANCE] Starting enhancement...")
         
         try:
-            from prompt import render_synthesizer_prompt, SYNTHESIZER_ACTION_POLICIES
+            from prompt import build_geo_query_instruction, get_length_hint
+            from config_manager import get_config
             
-            # Get the correct action policy for GEO_QUERY
-            action_policy = SYNTHESIZER_ACTION_POLICIES.get("GEO_QUERY", "")
+            # Get response length config from config.yaml
+            cfg = get_config()
+            length_config = cfg.get_response_length_config("GEO_QUERY")
+            max_tokens = length_config.get('max_tokens', 500)
+            temperature = length_config.get('temperature', 0.3)
+            
+            # Use unified instruction hint builder
+            instruction_hint = build_geo_query_instruction(ctx.query)
+            instruction_hint += get_length_hint(max_tokens)
             
             # Prepare materials with original response
             materials = f"""# Original Route Information
@@ -390,30 +398,22 @@ class GEO_QUERY(Action):
 {result.content}
 """
             
-            # Instruction for enhancement
-            instruction_hint = f"""User asked: "{ctx.query}"
-
-Please rewrite the route information above to be more friendly and conversational while:
-- Keeping the SAME language as the user's query
-- Preserving ALL factual details (station names, distances, durations, transit lines)
-- Making it easy to read and follow
-- Adding a brief friendly greeting/closing if appropriate"""
-            
-            # Render prompt using correct parameter order
-            enhanced_prompt = render_synthesizer_prompt(
-                action_policy=action_policy,
+            # Use synthesizer.generate() for unified handling
+            enhanced_content = await self.synthesizer.generate(
+                category="GEO_QUERY",
+                style_key="auto",
+                constraints={
+                    "language": "auto",
+                    "tone": "friendly, conversational",
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                    "instruction_hint": instruction_hint
+                },
                 materials=materials,
-                user_query=ctx.query,
-                instruction_hint=instruction_hint
+                task_scaffold=None
             )
             
-            # Call LLM with configured temperature
-            enhanced_content = await self.synthesizer.llm(
-                enhanced_prompt, 
-                temperature=self.enhancement_temperature
-            )
-            
-            print(f"[GEO_QUERY][ENHANCE] Completed")
+            print(f"[GEO_QUERY][ENHANCE] Completed (max_tokens={max_tokens})")
             
             # Create new artifact with enhanced content
             enhanced_result = Artifact(
@@ -423,7 +423,9 @@ Please rewrite the route information above to be more friendly and conversationa
                     **result.meta,
                     "enhanced": True,
                     "original_length": len(result.content),
-                    "enhanced_length": len(enhanced_content)
+                    "enhanced_length": len(enhanced_content),
+                    "max_tokens": max_tokens,
+                    "temperature": temperature
                 }
             )
             

@@ -225,21 +225,36 @@ class REASONING(Action):
             # Get appropriate scaffold
             scaffold = REASONING_SCAFFOLDS[reasoning_type]
             
-            # Use synthesizer's generate method with proper constraints for natural output
-            # Build constraints for synthesis with temperature from config
+            # Determine which category config to use based on router_category
+            # If it's CONVERSATIONAL_FOLLOWUP, use shorter response config
             cfg = get_config()
-            reasoning_temperature = cfg.get('models.reasoning.temperature', 0.5)
+            
+            if ctx.router_category == "CONVERSATIONAL_FOLLOWUP":
+                # Use CONVERSATIONAL_FOLLOWUP config (300 tokens, brief)
+                length_config = cfg.get_response_length_config("CONVERSATIONAL_FOLLOWUP")
+                category_for_synthesis = "CONVERSATIONAL_FOLLOWUP"
+                logger.info(f"Using CONVERSATIONAL_FOLLOWUP config for brief response")
+            else:
+                # Use KNOWLEDGE_REASONING config (6000 tokens, comprehensive)
+                length_config = cfg.get_response_length_config("KNOWLEDGE_REASONING")
+                category_for_synthesis = "KNOWLEDGE_REASONING"
+            
+            max_tokens = length_config.get('max_tokens', 6000)
+            temperature = length_config.get('temperature', 0.7)
+            
+            logger.info(f"Response config: max_tokens={max_tokens}, temperature={temperature}")
             
             constraints = {
                 "language": "auto",  # Let synthesizer detect language
                 "tone": "friendly, conversational",
-                "temperature": reasoning_temperature,  # Use config value
+                "temperature": temperature,
+                "max_tokens": max_tokens,
                 "instruction_hint": f"Focus on {reasoning_type.value} reasoning approach. Use diverse formatting: bullet points, numbered lists, comparison tables, and structured presentations where appropriate. Mix paragraphs with lists and tables for better readability."
             }
             
             # Execute reasoning through synthesizer using generate method
             text = await toolset.synthesizer.generate(
-                category="KNOWLEDGE_REASONING",
+                category=category_for_synthesis,  # Use determined category
                 style_key="auto",  # 使用 auto 启用自动语言检测和样式选择
                 constraints=constraints,
                 materials=ctx.query,  # Pass the original query as materials
@@ -252,7 +267,7 @@ class REASONING(Action):
                 # Retry with more explicit constraints
                 constraints["instruction_hint"] = f"Provide a comprehensive {reasoning_type.value} explanation with concrete examples and practical insights."
                 text = await toolset.synthesizer.generate(
-                    category="KNOWLEDGE_REASONING",
+                    category=category_for_synthesis,  # Use determined category
                     style_key="auto",  # 使用 auto 启用自动语言检测和样式选择
                     constraints=constraints,
                     materials=ctx.query,

@@ -7,6 +7,7 @@ from config_manager import get_config
 from prompt import (
     SYNTHESIZER_GLOBAL_SYSTEM,
     SYNTHESIZER_HIDDEN_REASONING_SCAFFOLD,
+    SYNTHESIZER_CONVERSATIONAL_SCAFFOLD,
     SYNTHESIZER_ACTION_POLICIES,
     render_synthesizer_prompt
 )
@@ -89,15 +90,17 @@ class Synthesizer:
             import openai
             client = openai.OpenAI(api_key=api_key, base_url=api_base)
             
-            # Get max_tokens from config
-            max_tokens_config = get_config().get('models.synthesizer.max_tokens', 2000)
-            
-            async def real_llm(prompt, temperature=0):
+            # Modified: Support dynamic max_tokens
+            async def real_llm(prompt, temperature=0, max_tokens=None):
+                # If max_tokens not specified, use config default
+                if max_tokens is None:
+                    max_tokens = get_config().get('models.synthesizer.max_tokens', 2000)
+                
                 response = client.chat.completions.create(
                     model=model,
                     messages=[{"role": "user", "content": prompt}],
                     temperature=temperature,
-                    max_tokens=max_tokens_config
+                    max_tokens=max_tokens  # Use dynamic max_tokens
                 )
                 return response.choices[0].message.content
             
@@ -110,7 +113,7 @@ class Synthesizer:
             print(f"⚠️ Failed to initialize OpenAI client: {e}, using mock LLM")
             return self._mock_llm
     
-    async def _mock_llm(self, prompt, temperature=0):
+    async def _mock_llm(self, prompt, temperature=0, max_tokens=None):
         """Fallback mock LLM for testing"""
         if "summarize" in prompt.lower():
             return "• Key point 1: Main topic overview\n• Key point 2: Important details\n• Key point 3: Key conclusions"
@@ -124,9 +127,44 @@ class Synthesizer:
     async def generate(self, category, style_key, constraints, materials, task_scaffold=None):
         # directly use render_synthesizer_prompt, it will automatically handle style selection and language detection
         
-
+        # 1. Auto-detect language
         auto_lang = detect_lang_4way(materials) # if no user_query, return materials
         print(f'[SYNTHESIZER][LANG_DEBUG] auto_lang: {auto_lang}')
+        
+        # 2. Get response length config from config.yaml
+        cfg = get_config()
+        length_config = cfg.get_response_length_config(category)
+        
+        # 3. Use constraints values if provided, otherwise use config values
+        max_tokens = constraints.get('max_tokens', length_config.get('max_tokens', 3000))
+        temperature = constraints.get('temperature', length_config.get('temperature', self.temperature))
+        
+        # Override temperature for TASK_PRODUCTIVITY (deterministic)
+        if category == "TASK_PRODUCTIVITY":
+            temperature = 0.0
+        
+        # 4. Build instruction hint with length guidance
+        instruction_hint = constraints.get('instruction_hint', '')
+        
+        # Add length hint based on max_tokens
+        if max_tokens <= 500:
+            length_hint = f"\n\nIMPORTANT: Keep response concise and focused (approximately {max_tokens} tokens / {int(max_tokens * 0.75)} words)."
+        elif max_tokens <= 2000:
+            length_hint = f"\n\nIMPORTANT: Provide a well-structured response (approximately {max_tokens} tokens / {int(max_tokens * 0.75)} words)."
+        else:
+            length_hint = f"\n\nIMPORTANT: Provide a comprehensive response (approximately {max_tokens} tokens / {int(max_tokens * 0.75)} words)."
+        
+        instruction_hint = instruction_hint + length_hint
+        
+        # 5. Select appropriate scaffold based on category
+        if category == "CONVERSATIONAL_FOLLOWUP":
+            scaffold = SYNTHESIZER_CONVERSATIONAL_SCAFFOLD  # Brief, direct, no restating
+        elif category == "KNOWLEDGE_REASONING":
+            scaffold = SYNTHESIZER_HIDDEN_REASONING_SCAFFOLD  # Comprehensive analysis
+        else:
+            scaffold = ""  # No scaffold for other categories
+        
+        # 6. Render prompt
         prompt = render_synthesizer_prompt(
             action_policy=SYNTHESIZER_ACTION_POLICIES.get(category, "Provide helpful and accurate responses."),
             materials=materials,
@@ -135,14 +173,14 @@ class Synthesizer:
             reading_level=constraints.get("reading_level", "general"),
             preferred_style=(style_key if style_key and style_key != "auto" else None),
             global_system=SYNTHESIZER_GLOBAL_SYSTEM,
-            internal_scaffold=(SYNTHESIZER_HIDDEN_REASONING_SCAFFOLD if category == "KNOWLEDGE_REASONING" else "")
+            internal_scaffold=scaffold,
+            instruction_hint=instruction_hint
         )
 
-        temperature = 0.0 if category == "TASK_PRODUCTIVITY" else constraints.get("temperature", self.temperature)
-        print(f"[SYNTHESIZER][EXEC] model={self.model_name} temp={temperature} category={category} lang={auto_lang}")
+        print(f"[SYNTHESIZER][EXEC] model={self.model_name} temp={temperature} category={category} lang={auto_lang} max_tokens={max_tokens}")
 
-        # pass the rendered prompt to the model
-        response = await self.llm(prompt, temperature=temperature)
+        # 7. Call LLM with dynamic max_tokens
+        response = await self.llm(prompt, temperature=temperature, max_tokens=max_tokens)
         return response
             
     async def synthesize(self, category, plan=None, extracted=None, user_query="", system_prompt=""):

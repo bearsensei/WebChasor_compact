@@ -261,6 +261,32 @@ class ConfigManager:
         """
         return self.get(f'performance.timeouts.{timeout_type}', 30)
     
+    def get_response_length_config(self, category: str) -> Dict[str, Any]:
+        """
+        Get response length configuration for a specific category.
+        
+        Args:
+            category: Router category (e.g., 'INFORMATION_RETRIEVAL', 'GEO_QUERY')
+        
+        Returns:
+            Dict with max_tokens and temperature
+        """
+        # Normalize category name to config key
+        category_key = category.lower()
+        
+        # Get category-specific config
+        config_path = f'response_length.{category_key}'
+        category_config = self.get(config_path, {})
+        
+        # Fallback to default if not found
+        if not category_config:
+            category_config = self.get('response_length.default', {
+                'max_tokens': 3000,
+                'temperature': 0.7
+            })
+        
+        return category_config
+    
     def __str__(self) -> str:
         """String representation of configuration"""
         return f"ConfigManager(path={self._config_path}, sections={list(self._config.keys())})"
