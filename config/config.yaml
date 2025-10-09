@@ -53,7 +53,7 @@ ir_rag:
     language: zh-cn         # Search language (Chinese Traditional Hong Kong - most accurate for HK)
     location: Hong Kong     # Geographic location for search
     gl: hk                  # Geo-location country code (prioritizes .hk domains)
-    max_results: 20        # Maximum search results to return
+    max_results: 10        # Maximum search results to return
     # Single provider: 'serpapi', 'google_custom_search', or 'gcp_vertex_search'
     # Multiple providers (comma-separated): 'serpapi, gcp_vertex_search' (merges results from all)
     provider: serpapi, gcp_vertex_search
@@ -162,7 +162,7 @@ models:
     max_tokens: 5000             # Maximum tokens for query generation
     model_name: gpt-oss-20b     # Model name for query generation
     provider: openai            # Model provider
-    temperature: 0.8            # Higher temperature for diverse queries
+    temperature: 0.3            # Higher temperature for diverse queries
     num_queries: 5              # Number of diverse queries to generate
 
 # Performance and optimization settings
@@ -364,7 +364,7 @@ geo_query:
 response_length:
   # Information Retrieval responses
   information_retrieval:
-    max_tokens: 8000          # Maximum tokens for IR_RAG responses (comprehensive analysis)
+    max_tokens: 20000          # Maximum tokens for IR_RAG responses (comprehensive analysis)
     temperature: 0.8          # Temperature for IR_RAG
     
   # Knowledge Reasoning responses  

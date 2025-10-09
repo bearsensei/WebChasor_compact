@@ -40,7 +40,7 @@ TEST_MODE = "single"
 # Recommended: Use HTML pages like:
 #   - "https://www.ird.gov.hk/chi/tax/sal.htm"
 #   - "https://www.gov.hk/tc/residents/taxes/etax/services/tax_computation.htm"
-SINGLE_URL = "https://hk.finance.yahoo.com/quote/NVDA/"
+SINGLE_URL = "https://hk.finance.yahoo.com/quote/AMD/"
 
 # Batch URLs test
 BATCH_URLS = [

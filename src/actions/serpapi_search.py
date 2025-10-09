@@ -233,10 +233,36 @@ class SerpAPISearch:
             
             # Add knowledge graph if available
             if knowledge_graph:
+                # Extract description
+                snippet = knowledge_graph.get('description', '')
+                
+                # Metadata fields to skip (not content)
+                skip_keys = {'type', 'kgmid', 'knowledge_graph_search_link', 'serpapi_knowledge_graph_search_link',
+                            'title', 'description', 'website', 'source', 'entity_type'}
+                
+                # Dynamically extract all structured fields
+                structured_fields = []
+                for key, value in knowledge_graph.items():
+                    # Skip metadata and already extracted fields
+                    if key in skip_keys:
+                        continue
+                    
+                    # Extract string values
+                    if isinstance(value, str) and value.strip():
+                        structured_fields.append(f"{key}: {value}")
+                    # Extract list values (e.g., founders, subsidiaries)
+                    elif isinstance(value, list) and value:
+                        if all(isinstance(item, str) for item in value[:3]):  # Check first 3 items
+                            structured_fields.append(f"{key}: {', '.join(value[:5])}")  # Limit to 5 items
+                
+                # Append structured data to snippet
+                if structured_fields:
+                    snippet = snippet + "\n\n" + "\n".join(structured_fields[:10])  # Limit to 10 fields
+                
                 processed_results.append({
                     'type': 'knowledge_graph',
                     'title': knowledge_graph.get('title', ''),
-                    'snippet': knowledge_graph.get('description', ''),
+                    'snippet': snippet,
                     'link': knowledge_graph.get('website', ''),
                     'source': knowledge_graph.get('source', {}).get('name', '')
                 })
