@@ -130,20 +130,33 @@ class GCPVertexSearch:
             return f"GCP Vertex Search Error: {str(e)}"
 
     def get_structured_results(self, query: str, num_results: int = 10, location: str = 'Hong Kong', 
-                             language: str = 'zh-cn', tbs: str = None) -> List[Dict[str, Any]]:
-        """Get structured search results for IR_RAG integration"""
+                             language: str = 'zh-cn', tbs: str = None, order_by: str = None) -> List[Dict[str, Any]]:
+        """
+        Get structured search results for IR_RAG integration
+        
+        Args:
+            query: Search query string
+            num_results: Number of results to return
+            location: Geographic location (not used by GCP, kept for compatibility)
+            language: Language code (not used by GCP, kept for compatibility)
+            tbs: Time-based search filter (e.g., 'qdr:m'). If provided, will sort by date
+            order_by: Explicit ordering - "date" for date ordering, None for relevance
+        
+        Returns:
+            List of search result dictionaries
+        """
         # Check availability
         if self.error_msg:
             print(f"[GCPVertexSearch] {self.error_msg}")
             return []
         
         try:
-            return self._execute_search(query, num_results, tbs)
+            return self._execute_search(query, num_results, tbs, order_by)
         except Exception as e:
             print(f"GCP Vertex Search Structured Search Error: {e}")
             return []
 
-    def _execute_search(self, query: str, num_results: int, tbs: str = None) -> List[Dict[str, Any]]:
+    def _execute_search(self, query: str, num_results: int, tbs: str = None, order_by: str = None) -> List[Dict[str, Any]]:
         """Execute the actual GCP Vertex AI search using Discovery Engine"""
         
         # Check if GCP libraries are available
@@ -157,7 +170,14 @@ class GCPVertexSearch:
             print(f"[GCPVertexSearch][ERROR] {self.error_msg}")
             return []
         
-        print(f"[GCPVertexSearch] Searching: '{query}' (results: {num_results})")
+        # Determine order_by based on time filter
+        if tbs and not order_by:
+            order_by = "date"  # If time filter is requested, sort by date
+            print(f"[GCPVertexSearch] Searching: '{query}' (results: {num_results}, order_by: date)")
+        elif order_by:
+            print(f"[GCPVertexSearch] Searching: '{query}' (results: {num_results}, order_by: {order_by})")
+        else:
+            print(f"[GCPVertexSearch] Searching: '{query}' (results: {num_results}, order_by: relevance)")
         
         try:
             from google.api_core.client_options import ClientOptions
@@ -182,12 +202,22 @@ class GCPVertexSearch:
                 f"servingConfigs/default_config"
             )
 
-            # Create search request
-            request = discoveryengine.SearchRequest(
-                serving_config=serving_config,
-                query=query,
-                page_size=num_results,
-            )
+            # Create search request with optional date ordering
+            request_params = {
+                'serving_config': serving_config,
+                'query': query,
+                'page_size': num_results,
+            }
+            
+            # Add orderBy parameter if specified
+            # GCP Vertex Search supports: "date" (descending by date) or leave empty for relevance
+            if order_by == "date":
+                request_params['order_by'] = "date"
+                print(f"[GCPVertexSearch] Applied ordering: date (most recent first)")
+            
+            print(f"[GCPVertexSearch] Final API Payload: {request_params}")
+            
+            request = discoveryengine.SearchRequest(**request_params)
 
             # Execute search
             page_result = client.search_lite(request)
@@ -353,6 +383,7 @@ class GCPVertexSearch:
         location: str = 'Hong Kong',
         language: str = 'zh-cn',
         tbs: str = None,
+        gl: str = None,  # Added for API consistency (not used by GCP Vertex Search)
         concurrent: int = None,
         qps: int = None,
         retries: int = None
@@ -360,6 +391,9 @@ class GCPVertexSearch:
         """
         Batch search for multiple queries.
         This method performs client-side concurrent requests with QPS limiting and retries.
+        
+        Note: location, language, and gl parameters are accepted for API consistency
+        but are not used by GCP Vertex Search (configured in GCP console instead).
 
         Returns a mapping: { query: [result_dict, ...] }
         """
@@ -404,12 +438,13 @@ class GCPVertexSearch:
         location: str = 'Hong Kong',
         language: str = 'zh-cn',
         tbs: str = None,
+        gl: str = None,  # Added for API consistency
         **kwargs
     ) -> List[Dict[str, Any]]:
         """
         Batch search and flatten all results into a single list with `query` annotated.
         """
-        mapping = self.batch_call(queries, num_results, location, language, tbs, **kwargs)
+        mapping = self.batch_call(queries, num_results, location, language, tbs, gl, **kwargs)
         flat: List[Dict[str, Any]] = []
         for q, items in mapping.items():
             for it in items:

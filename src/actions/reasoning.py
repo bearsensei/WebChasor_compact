@@ -261,9 +261,10 @@ class REASONING(Action):
                 task_scaffold=None  # Let the hidden reasoning scaffold handle structure
             )
             
-            # Validate output
-            if not text or len(text.strip()) < 50:
-                logger.warning("Reasoning output seems too short, retrying...")
+            # Validate output (but allow short responses for conversational followup)
+            min_length = 10 if ctx.router_category == "CONVERSATIONAL_FOLLOWUP" else 50
+            if not text or len(text.strip()) < min_length:
+                logger.warning(f"Reasoning output seems too short ({len(text.strip()) if text else 0} chars, min: {min_length}), retrying...")
                 # Retry with more explicit constraints
                 constraints["instruction_hint"] = f"Provide a comprehensive {reasoning_type.value} explanation with concrete examples and practical insights."
                 text = await toolset.synthesizer.generate(

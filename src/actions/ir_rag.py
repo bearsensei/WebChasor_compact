@@ -9,9 +9,10 @@ import asyncio
 import logging
 import requests
 from typing import List, Dict, Any, Optional, Union
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 import re
+import hashlib
 from urllib.parse import urlparse, urljoin
 from bs4 import BeautifulSoup
 import time
@@ -22,6 +23,11 @@ from actions.google_search import GoogleCustomSearch
 from actions.gcp_vertex_search import GCPVertexSearch
 from actions.querymaker import QueryMaker
 from config_manager import get_config
+# Import components from standalone modules
+from planner import Planner, PlanTask, ExtractionPlan
+from actions.visitor import WebVisitor, WebPage
+from actions.ranker import ContentRanker, ContentPassage
+from actions.extractor import InformationExtractor, ExtractedVariable
 
 # Setup logging
 logger = logging.getLogger(__name__)
@@ -34,22 +40,9 @@ class RetrievalProvider(Enum):
     VECTOR_DB = "vector_db"  # Placeholder for future implementation
     HYBRID = "hybrid"        # Combine both sources
 
-@dataclass
-class PlanTask:
-    """Individual extraction task from planner"""
-    fact: str
-    variable_name: str
-    category: str = "other"
-    confidence_threshold: float = 0.7
+# PlanTask and ExtractionPlan now imported from planner module
 
-@dataclass
-class ExtractionPlan:
-    """Complete plan from planner"""
-    archetype: str = "general"
-    entity: Optional[str] = None
-    tasks_to_extract: List[PlanTask] = field(default_factory=list)
-    final_calculation: Optional[Dict[str, Any]] = None
-    presentation_hint: Optional[Dict[str, Any]] = None
+# WebPage, ContentPassage, ExtractedVariable now imported from standalone modules
 
 @dataclass
 class SearchResult:
@@ -64,38 +57,6 @@ class SearchResult:
     confidence: float = 0.0
 
 @dataclass
-class WebPage:
-    """Fetched and cleaned web page content"""
-    url: str
-    title: str
-    content: str
-    headings: List[str] = field(default_factory=list)
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    fetch_time: float = 0.0
-    success: bool = True
-    error: Optional[str] = None
-
-@dataclass
-class ContentPassage:
-    """Ranked content passage for extraction"""
-    text: str
-    source_url: str
-    heading_context: str = ""
-    score: float = 0.0
-    task_relevance: Dict[str, float] = field(default_factory=dict)
-    position: int = 0
-
-@dataclass
-class ExtractedVariable:
-    """Extracted information for a specific variable"""
-    variable_name: str
-    value: Any
-    confidence: float
-    provenance: List[str] = field(default_factory=list)  # Source URLs
-    extraction_method: str = "llm"  # llm, regex, ner
-    raw_passages: List[str] = field(default_factory=list)
-
-@dataclass
 class IRConfig:
     """Configuration for IR_RAG execution"""
     # Search configuration
@@ -104,6 +65,8 @@ class IRConfig:
     search_providers: List[RetrievalProvider] = None  # Multiple providers for hybrid/fallback
     search_location: str = "Hong Kong"
     search_language: str = "zh-cn"
+    search_gl: str = None  # Geo-location country code (e.g., 'hk', 'us', 'cn')
+    search_time_filter: str = None  # Time-based search filter (e.g., 'qdr:d', 'qdr:w', 'qdr:y')
     
     # Content fetching
     enable_web_scraping: bool = False  # 🔧 NEW: Web scraping toggle
@@ -123,719 +86,7 @@ class IRConfig:
     vector_top_k: int = 10
     hybrid_weight: float = 0.5  # Weight for combining vector and search results
 
-class Planner:
-    """Planner component that creates extraction plans"""
-    
-    def __init__(self, llm_client=None, model_name: str = None):
-        """Initialize planner with LLM client"""
-        self.client = llm_client
-        self.model_name = model_name or get_config().get('models.planner.model_name', 'gpt-4')
-        # Import planner prompt
-        try:
-            from prompt import PLANNER_PROMPT
-            self.planner_prompt = PLANNER_PROMPT
-        except ImportError:
-            logger.warning("Could not import PLANNER_PROMPT, using fallback")
-            self.planner_prompt = self._get_fallback_prompt()
-    
-    def _get_fallback_prompt(self) -> str:
-        """Fallback planner prompt if import fails"""
-        return """
-        You are a Task Planner. Decompose the user query into structured extraction tasks.
-        Output MUST be valid JSON with this schema:
-        {
-          "plan": {
-            "archetype": "biography|fact_verification|recent_situation|background|comparison|other",
-            "entity": "main entity name",
-            "tasks_to_extract": [
-              {
-                "fact": "What specific fact to extract?",
-                "variable_name": "snake_case_name",
-                "category": "biography|fact_verification|recent_situation|background|comparison|other"
-              }
-            ]
-          }
-        }
-        """
-    
-    async def plan(self, query: str, archetype_hint: Optional[str] = None) -> ExtractionPlan:
-        """Create extraction plan for the given query"""
-        try:
-            print(f"📋 PLANNER: Creating plan for query: {query[:100]}...")
-            
-            if not self.client:
-                logger.warning("No LLM client available, using fallback plan")
-                return self._create_fallback_plan(query)
-            
-            # Build planner prompt with query
-            prompt = self.planner_prompt.replace("{user_query}", query)
-            
-            # Call LLM for planning
-            cfg = get_config()
-            planner_max_tokens = cfg.get('models.planner.max_tokens', 2000)
-            planner_temperature = cfg.get('models.planner.temperature', 0.1)
-            
-            response = self.client.chat.completions.create(
-                model=self.model_name,
-                messages=[
-                    {"role": "system", "content": prompt},
-                    {"role": "user", "content": f"User: {query}"}
-                ],
-                temperature=planner_temperature,
-                max_tokens=planner_max_tokens
-            )
-            
-            plan_text = response.choices[0].message.content.strip()
-            finish_reason = response.choices[0].finish_reason
-
-            # Check if response was truncated
-            if finish_reason == 'length':
-                logger.warning(f"Planner response was truncated (finish_reason=length), may cause JSON parse error")
-                print(f"[PLANNER][WARN] Response truncated at {len(plan_text)} chars, consider increasing max_tokens")
-            
-            # Parse JSON response
-            try:
-                plan_data = json.loads(plan_text)
-                plan_dict = plan_data.get("plan", plan_data)
-                
-                # Convert to structured plan
-                tasks = []
-                for task_data in plan_dict.get("tasks_to_extract", []):
-                    tasks.append(PlanTask(
-                        fact=task_data["fact"],
-                        variable_name=task_data["variable_name"],
-                        category=task_data.get("category", "other")
-                    ))
-                
-                extraction_plan = ExtractionPlan(
-                    archetype=plan_dict.get("archetype", "general"),
-                    entity=plan_dict.get("entity"),
-                    tasks_to_extract=tasks,
-                    final_calculation=plan_dict.get("final_calculation"),
-                    presentation_hint=plan_dict.get("presentation_hint")
-                )
-                
-                print(f"📋 PLANNER: Created plan with {len(tasks)} tasks, archetype: {extraction_plan.archetype}")
-                return extraction_plan
-                
-            except json.JSONDecodeError as e:
-                print(f"[PLANNER][ERROR] Failed to parse planner JSON: {e}")
-                print(f"[PLANNER][ERROR] Raw response (first 500 chars): {plan_text[:500]}")
-                print(f"[PLANNER][ERROR] Raw response (last 200 chars): {plan_text[-200:]}")
-                logger.error(f"Failed to parse planner JSON: {e}")
-                logger.error(f"Raw response: {plan_text}")
-                print(f"[PLANNER][FALLBACK] Using fallback plan")
-                return self._create_fallback_plan(query)
-                
-        except Exception as e:
-            logger.error(f"Planner error: {e}")
-            return self._create_fallback_plan(query)
-    
-    def _create_fallback_plan(self, query: str) -> ExtractionPlan:
-        """Create a simple fallback plan when LLM planning fails"""
-        # Extract key terms for basic planning - support both English and Chinese
-        english_terms = re.findall(r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b', query)
-        chinese_terms = re.findall(r'[\u4e00-\u9fff]+', query)
-        
-        # Prefer Chinese terms for Chinese queries, English terms for English queries
-        if chinese_terms:
-            entity = chinese_terms[0]  # Use first Chinese term
-        elif english_terms:
-            entity = english_terms[0]  # Use first English term
-        else:
-            entity = "unknown"
-        
-        # Create basic extraction tasks with appropriate language
-        if chinese_terms:
-            # Use Chinese for Chinese queries
-            tasks = [
-                PlanTask(
-                    fact=f"关于{entity}的基本信息是什么？",
-                    variable_name="basic_info",
-                    category="background"
-                ),
-                PlanTask(
-                    fact=f"关于{entity}的最新信息有哪些？",
-                    variable_name="key_facts",
-                    category="recent_situation"
-                )
-            ]
-        else:
-            # Use English for English queries
-            tasks = [
-                PlanTask(
-                    fact=f"What is the basic information about {entity}?",
-                    variable_name="basic_info",
-                    category="background"
-                ),
-                PlanTask(
-                    fact=f"What are the recent facts about {entity}?",
-                    variable_name="key_facts",
-                    category="recent_situation"
-                )
-            ]
-        
-        return ExtractionPlan(
-            archetype="general",
-            entity=entity,
-            tasks_to_extract=tasks
-        )
-
-class WebVisitor:
-    """Component for fetching and cleaning web pages"""
-    
-    def __init__(self, config: IRConfig):
-        self.config = config
-    
-    async def fetch_many(self, urls: List[str]) -> List[WebPage]:
-        """Fetch multiple URLs in parallel"""
-        print(f"🌐 VISITOR: Fetching {len(urls)} pages...")
-        
-        # Limit to max pages
-        urls = urls[:self.config.max_pages_to_visit]
-        
-        # Create tasks for parallel fetching
-        tasks = [self._fetch_single(url) for url in urls]
-        pages = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # Filter successful pages
-        successful_pages = []
-        for page in pages:
-            if isinstance(page, WebPage) and page.success:
-                successful_pages.append(page)
-        
-        print(f"🌐 VISITOR: Successfully fetched {len(successful_pages)}/{len(urls)} pages")
-        return successful_pages
-    
-    async def _fetch_single(self, url: str) -> WebPage:
-        """Fetch and clean a single web page"""
-        start_time = time.time()
-        
-        try:
-            # Basic URL validation
-            parsed = urlparse(url)
-            if not parsed.scheme or not parsed.netloc:
-                return WebPage(
-                    url=url, title="", content="", success=False, 
-                    error="Invalid URL", fetch_time=time.time() - start_time
-                )
-            
-            # Fetch page content
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-            }
-            
-            response = requests.get(url, headers=headers, timeout=self.config.fetch_timeout)
-            response.raise_for_status()
-            
-            # Parse HTML
-            soup = BeautifulSoup(response.content, 'html.parser')
-            
-            # Extract title
-            title_tag = soup.find('title')
-            title = title_tag.get_text().strip() if title_tag else ""
-            
-            # Remove script and style elements
-            for script in soup(["script", "style", "nav", "header", "footer", "aside"]):
-                script.decompose()
-            
-            # Extract main content
-            main_content = soup.find('main') or soup.find('article') or soup.find('div', class_=re.compile(r'content|main|article'))
-            if not main_content:
-                main_content = soup.find('body') or soup
-            
-            # Extract text content
-            content = main_content.get_text(separator='\n', strip=True)
-            
-            # Extract headings for context
-            headings = []
-            for heading in soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
-                heading_text = heading.get_text().strip()
-                if heading_text:
-                    headings.append(heading_text)
-            
-            # Clean content
-            content = self._clean_content(content)
-            
-            return WebPage(
-                url=url,
-                title=title,
-                content=content,
-                headings=headings,
-                metadata={'status_code': response.status_code, 'content_type': response.headers.get('content-type', '')},
-                fetch_time=time.time() - start_time,
-                success=True
-            )
-            
-        except Exception as e:
-            logger.error(f"Failed to fetch {url}: {e}")
-            return WebPage(
-                url=url, title="", content="", success=False,
-                error=str(e), fetch_time=time.time() - start_time
-            )
-    
-    def _clean_content(self, content: str) -> str:
-        """Clean and normalize content"""
-        # Remove excessive whitespace
-        content = re.sub(r'\n\s*\n', '\n\n', content)
-        content = re.sub(r' +', ' ', content)
-        
-        # Remove common boilerplate patterns
-        patterns_to_remove = [
-            r'Cookie Policy.*?Accept',
-            r'Subscribe to.*?newsletter',
-            r'Follow us on.*?social media',
-            r'Advertisement\s*',
-            r'Sponsored content.*?\n',
-        ]
-        
-        for pattern in patterns_to_remove:
-            content = re.sub(pattern, '', content, flags=re.IGNORECASE | re.DOTALL)
-        
-        return content.strip()
-
-class ContentRanker:
-    """Component for ranking and chunking content passages"""
-    
-    def __init__(self, config: IRConfig):
-        self.config = config
-    
-    def rank_passages(self, plan: ExtractionPlan, pages: List[WebPage]) -> Dict[str, List[ContentPassage]]:
-        """Rank content passages by relevance to each extraction task"""
-        print(f"📊 RANKER: Ranking passages for {len(plan.tasks_to_extract)} tasks across {len(pages)} pages...")
-        
-        task_passages = {}
-        
-        for task in plan.tasks_to_extract:
-            passages = []
-            
-            # Extract and rank passages for this task
-            for page in pages:
-                page_passages = self._extract_passages_from_page(page, task)
-                passages.extend(page_passages)
-            
-            # Sort by relevance score
-            passages.sort(key=lambda p: p.score, reverse=True)
-            
-            # Keep top passages
-            task_passages[task.variable_name] = passages[:self.config.max_passages_per_task]
-            
-            print(f"📊 RANKER: Task '{task.variable_name}' has {len(task_passages[task.variable_name])} top passages")
-        
-        return task_passages
-    
-    def _extract_passages_from_page(self, page: WebPage, task: PlanTask) -> List[ContentPassage]:
-        """Extract and score passages from a single page for a task"""
-        passages = []
-        
-        # Split content into chunks
-        chunks = self._chunk_content(page.content)
-        
-        for i, chunk in enumerate(chunks):
-            # Calculate relevance score
-            score = self._calculate_relevance_score(chunk, task, page)
-            
-            # Find relevant heading context
-            heading_context = self._find_heading_context(chunk, page.headings)
-            
-            passage = ContentPassage(
-                text=chunk,
-                source_url=page.url,
-                heading_context=heading_context,
-                score=score,
-                position=i
-            )
-            
-            passages.append(passage)
-        
-        return passages
-    
-    def _chunk_content(self, content: str) -> List[str]:
-        """Split content into overlapping chunks"""
-        sentences = re.split(r'[.!?]+', content)
-        chunks = []
-        
-        current_chunk = ""
-        current_length = 0
-        
-        for sentence in sentences:
-            sentence = sentence.strip()
-            if not sentence:
-                continue
-            
-            sentence_length = len(sentence.split())
-            
-            if current_length + sentence_length > self.config.chunk_size and current_chunk:
-                chunks.append(current_chunk.strip())
-                
-                # Start new chunk with overlap
-                overlap_sentences = current_chunk.split('.')[-2:]  # Keep last 2 sentences for overlap
-                current_chunk = '. '.join(overlap_sentences) + '. ' + sentence
-                current_length = len(current_chunk.split())
-            else:
-                current_chunk += '. ' + sentence if current_chunk else sentence
-                current_length += sentence_length
-        
-        if current_chunk:
-            chunks.append(current_chunk.strip())
-        
-        return chunks
-    
-    def _calculate_relevance_score(self, chunk: str, task: PlanTask, page: WebPage) -> float:
-        """Calculate relevance score for a chunk"""
-        score = 0.0
-        chunk_lower = chunk.lower()
-        task_lower = task.fact.lower()
-        
-        # Keyword matching
-        task_keywords = re.findall(r'\b\w+\b', task_lower)
-        for keyword in task_keywords:
-            if len(keyword) > 3:  # Skip short words
-                if keyword in chunk_lower:
-                    score += 1.0
-        
-        # Entity matching (if available)
-        if hasattr(task, 'entity') and task.entity:
-            entity_lower = task.entity.lower()
-            if entity_lower in chunk_lower:
-                score += 2.0
-        
-        # Question word matching
-        question_words = ['what', 'when', 'where', 'who', 'why', 'how']
-        for qword in question_words:
-            if qword in task_lower and qword in chunk_lower:
-                score += 0.5
-        
-        # Length penalty for very short chunks
-        if len(chunk.split()) < 20:
-            score *= 0.5
-        
-        # Boost for structured content (lists, numbers, dates)
-        if re.search(r'\d{4}', chunk):  # Years
-            score += 0.3
-        if re.search(r'\b\d+[.,]\d+\b', chunk):  # Numbers
-            score += 0.2
-        if re.search(r'^\s*[-•*]\s', chunk, re.MULTILINE):  # Lists
-            score += 0.2
-        
-        return score
-    
-    def _find_heading_context(self, chunk: str, headings: List[str]) -> str:
-        """Find the most relevant heading for this chunk"""
-        if not headings:
-            return ""
-        
-        chunk_lower = chunk.lower()
-        best_heading = ""
-        best_score = 0
-        
-        for heading in headings:
-            heading_lower = heading.lower()
-            
-            # Simple keyword overlap scoring
-            heading_words = set(re.findall(r'\b\w+\b', heading_lower))
-            chunk_words = set(re.findall(r'\b\w+\b', chunk_lower))
-            
-            overlap = len(heading_words & chunk_words)
-            if overlap > best_score:
-                best_score = overlap
-                best_heading = heading
-        
-        return best_heading
-
-class InformationExtractor:
-    """Component for extracting structured information from passages"""
-    
-    def __init__(self, llm_client=None, model_name: str = None):
-        self.client = llm_client
-        self.model_name = model_name or os.getenv("OPENAI_API_MODEL_AGENT_SYNTHESIZER", "gpt-3.5-turbo")
-    
-    async def extract_variables(self, plan: ExtractionPlan, ranked_passages: Dict[str, List[ContentPassage]]) -> Dict[str, ExtractedVariable]:
-        """Extract variables from ranked passages using LLM"""
-        print(f"🔍 EXTRACTOR: Extracting {len(plan.tasks_to_extract)} variables...")
-        
-        extracted_vars = {}
-        
-        for task in plan.tasks_to_extract:
-            passages = ranked_passages.get(task.variable_name, [])
-            if not passages:
-                print(f"🔍 EXTRACTOR: No passages found for {task.variable_name}")
-                continue
-            
-            # Extract variable using LLM or fallback methods
-            extracted_var = await self._extract_single_variable(task, passages)
-            extracted_vars[task.variable_name] = extracted_var
-            
-            print(f"🔍 EXTRACTOR: Extracted '{task.variable_name}' with confidence {extracted_var.confidence:.2f}")
-        
-        return extracted_vars
-    
-    async def _extract_single_variable(self, task: PlanTask, passages: List[ContentPassage]) -> ExtractedVariable:
-        """Extract a single variable from passages"""
-        try:
-            if self.client:
-                return await self._llm_extract(task, passages)
-            else:
-                return self._fallback_extract(task, passages)
-        except Exception as e:
-            logger.error(f"Extraction failed for {task.variable_name}: {e}")
-            return self._fallback_extract(task, passages)
-    
-    def _detect_language(self, text: str) -> str:
-        """Detect if text is primarily Chinese or English"""
-        if not text:
-            return "en"
-        chinese_chars = len(re.findall(r'[\u4e00-\u9fff]', text))
-        total_chars = len(text.strip())
-        if total_chars == 0:
-            return "en"
-        return "zh" if chinese_chars / total_chars > 0.3 else "en"
-    
-    def _extract_core_entities(self, question: str) -> List[str]:
-        """
-        Extract core entities from the question for validation.
-        Simple heuristic-based extraction (can be enhanced with NER later).
-        """
-        # Remove common question words
-        question_words = ['what', 'when', 'where', 'who', 'why', 'how', 'which', 
-                         '什么', '何时', '哪里', '谁', '为什么', '怎么', '哪个', '多少']
-        
-        # Tokenize and filter
-        import jieba
-        words = list(jieba.cut(question))
-        
-        # Filter out question words, punctuation, and short words
-        entities = []
-        for word in words:
-            word_lower = word.lower().strip()
-            if (len(word) >= 2 and 
-                word_lower not in question_words and 
-                not word.strip() in '，。？！、；：""''（）【】《》' and
-                not word.isdigit()):
-                entities.append(word)
-        
-        # Return top entities (limit to avoid too many)
-        return entities[:5]
-    
-    async def _llm_extract(self, task: PlanTask, passages: List[ContentPassage]) -> ExtractedVariable:
-        """Use LLM to extract information"""
-        # Get max passages from config (default to 20 if not set)
-        cfg = get_config()
-        max_passages = cfg.get('ir_rag.content.max_passages_per_task', 20)
-        
-        # Combine top passages (use config value)
-        combined_text = "\n\n".join([f"Source {i+1}: {p.source_url}\n{p.text}" for i, p in enumerate(passages[:max_passages])])
-        
-        # Extract core entities from the question for validation
-        core_entities = self._extract_core_entities(task.fact)
-        entities_str = ", ".join(core_entities) if core_entities else "N/A"
-        
-        # Detect language and build appropriate prompt
-        lang = self._detect_language(task.fact + " " + combined_text[:500])
-        
-        if lang == "zh":
-            # Chinese prompt
-            prompt = f"""从提供的文本段落中提取以下信息：
-
-问题: {task.fact}
-变量名: {task.variable_name}
-类别: {task.category}
-核心实体: {entities_str}
-
-文本段落:
-{combined_text}
-
-**关键要求**:
-1. 仅从提供的文本段落中提取信息
-2. 不要使用你自己的知识或做假设
-3. 提取的信息必须与核心实体相关
-4. 如果多个段落提供不同信息，优先选择最具体和最新的
-5. 尽可能引用原文支持你的提取
-
-请提供 JSON 格式的响应（必须是有效的 JSON，不要包含任何其他文本）:
-{{
-    "value": "提取的信息（如果未找到则为 null）",
-    "confidence": 0.0-1.0,
-    "reasoning": "简要解释并注明来源（例如：'来源 2 指出...'）",
-    "source_quote": "支持此提取的原文引用"
-}}
-
-如果在段落中未找到信息，设置 confidence 为 0.0，value 为 null。
-如果信息与核心实体无关，设置 confidence 为 0.0，value 为 null。
-"""
-        else:
-            # English prompt
-            prompt = f"""Extract the following information from the provided text passages:
-
-QUESTION: {task.fact}
-VARIABLE: {task.variable_name}
-CATEGORY: {task.category}
-CORE ENTITIES: {entities_str}
-
-TEXT PASSAGES:
-{combined_text}
-
-**CRITICAL REQUIREMENTS**:
-1. Extract information ONLY from the provided text passages above
-2. DO NOT use your own knowledge or make assumptions
-3. The extracted information MUST mention or relate to the CORE ENTITIES listed above
-4. If multiple passages provide different information, prioritize the most specific and recent one
-5. Quote the original text when possible to support your extraction
-
-Please provide a JSON response (must be valid JSON, no other text):
-{{
-    "value": "extracted information (or null if not found)",
-    "confidence": 0.0-1.0,
-    "reasoning": "brief explanation with source reference (e.g., 'Source 2 states...')",
-    "source_quote": "direct quote from the passage supporting this extraction"
-}}
-
-If the information is not found in the passages, set confidence to 0.0 and value to null.
-If the information does not relate to the CORE ENTITIES, set confidence to 0.0 and value to null.
-"""
-        
-        # Build system message based on language
-        if lang == "zh":
-            system_msg = "你是一个专业的信息提取专家。你必须只返回有效的 JSON 格式，不要包含任何其他文本。从文本段落中提取准确的事实信息。"
-        else:
-            system_msg = "You are an expert information extractor. You MUST respond with valid JSON only. Do not include any text before or after the JSON. Extract precise, factual information from text passages."
-        
-        try:
-            response = self.client.chat.completions.create(
-                model=self.model_name,
-                messages=[
-                    {"role": "system", "content": system_msg},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.1,
-                max_tokens=1500,  # Increased from 500 to 1500 to avoid truncation
-                response_format={"type": "json_object"}  # Force JSON response (OpenAI API)
-            )
-        except Exception as api_error:
-            # If response_format not supported, try without it
-            print(f"[EXTRACTOR][WARN] response_format not supported, retrying without it: {api_error}")
-            response = self.client.chat.completions.create(
-                model=self.model_name,
-                messages=[
-                    {"role": "system", "content": system_msg},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.1,
-                max_tokens=1500  # Increased from 500 to 1500 to avoid truncation
-            )
-        
-        # Check for None response
-        result_text = response.choices[0].message.content
-        if result_text is None:
-            print(f"[EXTRACTOR][ERROR] LLM returned None for {task.variable_name}")
-            print(f"[EXTRACTOR][ERROR] Response finish_reason: {response.choices[0].finish_reason}")
-            if response.choices[0].finish_reason == "length":
-                print(f"[EXTRACTOR][ERROR] Response was truncated due to max_tokens limit!")
-                print(f"[EXTRACTOR][ERROR] Consider increasing max_tokens in the code")
-            return self._fallback_extract(task, passages)
-        
-        result_text = result_text.strip()
-        
-        try:
-            result_data = json.loads(result_text)
-            
-            # Log extraction details for debugging
-            if cfg.is_decision_logging_enabled('ir_rag'):
-                print(f"[EXTRACTOR][DEBUG] Extracted value: {result_data.get('value')}")
-                print(f"[EXTRACTOR][DEBUG] Confidence: {result_data.get('confidence')}")
-                print(f"[EXTRACTOR][DEBUG] Reasoning: {result_data.get('reasoning')}")
-                if result_data.get('source_quote'):
-                    print(f"[EXTRACTOR][DEBUG] Source quote: {result_data.get('source_quote')[:100]}...")
-            
-            return ExtractedVariable(
-                variable_name=task.variable_name,
-                value=result_data.get("value"),
-                confidence=float(result_data.get("confidence", 0.0)),
-                provenance=[p.source_url for p in passages[:max_passages]],
-                extraction_method="llm",
-                raw_passages=[p.text for p in passages[:max_passages]]
-            )
-        except json.JSONDecodeError as e:
-            # JSON parsing failed - log details for debugging
-            print(f"[EXTRACTOR][ERROR] JSON parse failed for {task.variable_name}: {e}")
-            print(f"[EXTRACTOR][ERROR] Raw response (first 300 chars): {result_text[:300]}")
-            print(f"[EXTRACTOR][ERROR] This usually means LLM returned non-JSON format")
-            print(f"[EXTRACTOR][ERROR] Language detected: {lang}")
-            
-            # Try to extract information from the text response anyway
-            # Use fallback extraction as it's more reliable than raw text
-            print(f"[EXTRACTOR][FALLBACK] Using fallback extraction for {task.variable_name}")
-            return self._fallback_extract(task, passages)
-    
-    def _fallback_extract(self, task: PlanTask, passages: List[ContentPassage]) -> ExtractedVariable:
-        """Fallback extraction using simple heuristics"""
-        if not passages:
-            return ExtractedVariable(
-                variable_name=task.variable_name,
-                value=None,
-                confidence=0.0,
-                extraction_method="fallback"
-            )
-        
-        # Use the highest-scored passage as the answer
-        best_passage = passages[0]
-        
-        # Simple extraction based on task category
-        if task.category == "biography":
-            value = self._extract_biographical_info(best_passage.text)
-        elif task.category == "fact_verification":
-            value = self._extract_factual_claim(best_passage.text)
-        else:
-            # Generic extraction - use first sentence or paragraph
-            sentences = best_passage.text.split('.')
-            value = sentences[0].strip() if sentences else best_passage.text[:200]
-        
-        return ExtractedVariable(
-            variable_name=task.variable_name,
-            value=value,
-            confidence=0.6,
-            provenance=[p.source_url for p in passages],
-            extraction_method="fallback",
-            raw_passages=[p.text for p in passages]
-        )
-    
-    def _extract_biographical_info(self, text: str) -> str:
-        """Extract biographical information"""
-        # Look for patterns like "born in", "graduated from", etc.
-        bio_patterns = [
-            r'born (?:in|on) ([^.]+)',
-            r'graduated from ([^.]+)',
-            r'worked at ([^.]+)',
-            r'known for ([^.]+)'
-        ]
-        
-        for pattern in bio_patterns:
-            match = re.search(pattern, text, re.IGNORECASE)
-            if match:
-                return match.group(1).strip()
-        
-        # Fallback to first sentence
-        sentences = text.split('.')
-        return sentences[0].strip() if sentences else text[:200]
-    
-    def _extract_factual_claim(self, text: str) -> str:
-        """Extract factual claims"""
-        # Look for definitive statements
-        fact_patterns = [
-            r'(was founded in \d{4})',
-            r'(established in \d{4})',
-            r'(created in \d{4})',
-            r'(\d{4}[^.]*founded)'
-        ]
-        
-        for pattern in fact_patterns:
-            match = re.search(pattern, text, re.IGNORECASE)
-            if match:
-                return match.group(1).strip()
-        
-        # Fallback to first sentence
-        sentences = text.split('.')
-        return sentences[0].strip() if sentences else text[:200]
+# Planner, WebVisitor, ContentRanker, InformationExtractor now imported from standalone modules
 
 class IR_RAG(Action):
     """
@@ -870,6 +121,7 @@ class IR_RAG(Action):
             # Multiple providers configured
             self.search_tools = []
             provider_names = []
+            print(f"[IR_RAG][INIT] search_providers configured: {[p.value for p in self.config.search_providers]}")
             for provider in self.config.search_providers:
                 if provider == RetrievalProvider.GOOGLE_CUSTOM_SEARCH:
                     self.search_tools.append(GoogleCustomSearch())
@@ -884,6 +136,7 @@ class IR_RAG(Action):
             # Use first tool as primary (for backward compatibility)
             self.search_tool = self.search_tools[0] if self.search_tools else SerpAPISearch()
             
+            print(f"[IR_RAG][INIT] Configured {len(self.search_tools)} search providers: {', '.join(provider_names)}")
             if cfg.is_decision_logging_enabled('ir_rag'):
                 print(f"[IR_RAG][INIT] Using multiple search providers: {', '.join(provider_names)}")
         else:
@@ -916,23 +169,28 @@ class IR_RAG(Action):
         
         # Parse provider(s) - support both single and multiple providers
         provider_str = ir_config.get('search', {}).get('provider', 'serpapi')
+        print(f"[IR_RAG][CONFIG] Raw provider string: '{provider_str}'")
         search_providers = None
         search_provider = RetrievalProvider.SERPAPI
         
         if ',' in provider_str:
             # Multiple providers specified (e.g., "serpapi,gcp_vertex_search")
             provider_list = [p.strip() for p in provider_str.split(',')]
+            print(f"[IR_RAG][CONFIG] Detected multiple providers: {provider_list}")
             search_providers = []
             for p in provider_list:
                 try:
                     search_providers.append(RetrievalProvider(p))
+                    print(f"[IR_RAG][CONFIG] Successfully parsed provider: {p}")
                 except ValueError:
                     print(f"[IR_RAG][WARN] Unknown provider '{p}', skipping")
             # Use first provider as primary
             if search_providers:
                 search_provider = search_providers[0]
+                print(f"[IR_RAG][CONFIG] Primary provider: {search_provider.value}")
         else:
             # Single provider
+            print(f"[IR_RAG][CONFIG] Detected single provider: {provider_str}")
             try:
                 search_provider = RetrievalProvider(provider_str)
             except ValueError:
@@ -946,6 +204,8 @@ class IR_RAG(Action):
             max_pages_to_visit=ir_config.get('web_scraping', {}).get('max_pages', 5),
             search_location=ir_config.get('search', {}).get('location', 'Hong Kong'),
             search_language=ir_config.get('search', {}).get('language', 'zh-cn'),
+            search_gl=ir_config.get('search', {}).get('gl', None),  # Read gl from config
+            search_time_filter=ir_config.get('search', {}).get('time_filter', None),  # Read time filter from config
             enable_web_scraping=ir_config.get('web_scraping', {}).get('enabled', False),
             chunk_size=ir_config.get('content', {}).get('chunk_size', 500),
             chunk_overlap=ir_config.get('content', {}).get('chunk_overlap', 50),
@@ -981,25 +241,36 @@ class IR_RAG(Action):
             if not search_results:
                 return self._create_no_results_artifact(ctx.query)
             
-            # Step 3: Reading - Conditional web scraping
+            # Step 3: Reading - Hybrid approach: snippets + selective web scraping
+            # Strategy: Use ALL snippets as primary source, supplement with a few high-quality pages
+            
+            # 3a. Convert ALL search snippets to "virtual pages" for extraction
+            snippet_pages = self._create_pages_from_snippets(search_results)
+            print(f"[IR_RAG][SNIPPET] Created {len(snippet_pages)} virtual pages from snippets")
+            
+            # 3b. Optionally fetch a few high-quality web pages for deep content
+            web_pages = []
             if self.config.enable_web_scraping:
-                print(f"[IR_RAG][WEB] scraping=ENABLED fetching pages...")
-                selected_urls = self._select_seed_urls(search_results)
-                pages = await self.visitor.fetch_many(selected_urls)
-                print(f"[IR_RAG][WEB] fetched={len(pages)} pages")
-                
-                if not pages:
-                    print(f"[IR_RAG][WARN] No pages fetched, fallback to snippets")
-                    pages = self._create_pages_from_snippets(search_results)
+                print(f"[IR_RAG][WEB] scraping=ENABLED, fetching selective pages...")
+                selected_urls = await self._select_seed_urls(search_results, plan, ctx.query)
+                # Use config max_pages setting
+                max_fetch = min(self.config.max_pages_to_visit, len(selected_urls))
+                selected_urls = selected_urls[:max_fetch]
+                print(f"[IR_RAG][WEB] will fetch {len(selected_urls)} pages (config max_pages={self.config.max_pages_to_visit})")
+                web_pages = await self.visitor.fetch_many(selected_urls)
+                print(f"[IR_RAG][WEB] fetched={len(web_pages)} supplementary pages")
             else:
-                print(f"[IR_RAG][WEB] scraping=DISABLED using snippets only")
-                pages = self._create_pages_from_snippets(search_results)
+                print(f"[IR_RAG][WEB] scraping=DISABLED, using snippets only")
+            
+            # 3c. Combine snippet pages + web pages for comprehensive coverage
+            all_pages = snippet_pages + web_pages
+            print(f"[IR_RAG][CONTENT] Total pages for extraction: {len(all_pages)} (snippets: {len(snippet_pages)}, web: {len(web_pages)})")
             
             # Step 4: Ranking - Rank content passages by relevance
-            ranked_passages = self.ranker.rank_passages(plan, pages)
+            ranked_passages = self.ranker.rank_passages(plan, all_pages)
             
             # Step 5: Extraction - Extract structured information
-            extracted_vars = await self.extractor.extract_variables(plan, ranked_passages)
+            extracted_vars = await self.extractor.extract_variables(plan, ranked_passages, search_results)
             print(f"[IR_RAG][EXTRACT] variables={len(extracted_vars)}")
             
             # Step 6: Synthesis - Generate final response
@@ -1065,10 +336,11 @@ class IR_RAG(Action):
                 num_results=self.config.max_search_results,
                 location=self.config.search_location,
                 language=self.config.search_language,
+                gl=self.config.search_gl,  # Pass geo-location code
                 concurrent=concurrent,
                 qps=qps,
                 retries=retries,
-                tbs="qdr:y"
+                tbs=self.config.search_time_filter  # Use time filter from config
             )
             
             print(f"🔍 IR_RAG: Batch search returned {len(raw_results)} total results")
@@ -1135,10 +407,11 @@ class IR_RAG(Action):
                     num_results=self.config.max_search_results,
                     location=self.config.search_location,
                     language=self.config.search_language,
+                    gl=self.config.search_gl,  # Pass geo-location code
                     concurrent=concurrent,
                     qps=qps,
                     retries=retries,
-                    tbs="qdr:y"
+                    tbs=self.config.search_time_filter  # Use time filter from config
                 )
                 
                 provider_stats[provider_name] = len(raw_results)
@@ -1249,30 +522,161 @@ class IR_RAG(Action):
         print(f"🔍 IR_RAG: Parsed {len(results)} structured results from SerpAPI")
         return results
     
-    def _select_seed_urls(self, search_results: List[SearchResult]) -> List[str]:
-        """Select URLs to visit based on diversity and authority"""
+    async def _select_seed_urls(self, search_results: List[SearchResult], plan: ExtractionPlan, user_query: str) -> List[str]:
+        """
+        Use LLM to intelligently select the most relevant URLs to visit.
+        This replaces complex heuristic-based logic with semantic understanding.
+        """
         if not search_results:
             return []
+
+        max_targets = max(1, getattr(self.config, "max_pages_to_visit", 5))
         
-        selected_urls = []
-        seen_domains = set()
+        # Prepare candidates for LLM
+        candidates = []
+        for i, result in enumerate(search_results[:30], 1):  # Limit to top 30 to avoid token limits
+            candidates.append({
+                "index": i,
+                "title": result.title or "No title",
+                "url": result.url,
+                "snippet": (result.snippet or "")[:300],  # Truncate long snippets
+                "source": result.source or "",
+                "position": result.position
+            })
         
-        # Prioritize different domains for diversity
-        for result in search_results:
-            domain = urlparse(result.url).netloc
+        # Extract query context
+        entity_name = plan.entity if plan and plan.entity else ""
+        
+        print(f"[SELECTOR][LLM] Calling LLM to select {max_targets} URLs from {len(candidates)} candidates")
+        print(f"[SELECTOR][LLM] Query: '{user_query}', Entity: '{entity_name}'")
+        
+        # Build LLM prompt
+        prompt = self._build_url_selection_prompt(user_query, entity_name, candidates, max_targets)
+        
+        try:
+            # Call LLM
+            response = await self._call_llm_for_url_selection(prompt)
+            selected_indices = self._parse_url_selection_response(response)
             
-            # Skip if we already have a URL from this domain (unless it's a high-authority domain)
-            if domain in seen_domains and domain not in ['wikipedia.org', 'britannica.com', 'reuters.com']:
-                continue
+            # Map indices to URLs
+            selected_urls = []
+            for idx in selected_indices[:max_targets]:
+                if 1 <= idx <= len(search_results):
+                    url = search_results[idx - 1].url
+                    selected_urls.append(url)
+                    print(f"🌐 SELECTOR: [LLM_SELECTED] {url}")
             
-            selected_urls.append(result.url)
-            seen_domains.add(domain)
-            
-            # Stop when we have enough URLs
-            if len(selected_urls) >= self.config.max_pages_to_visit:
-                break
+            if selected_urls:
+                print(f"[SELECTOR][LLM] Successfully selected {len(selected_urls)} URLs")
+                return selected_urls
+            else:
+                print(f"[SELECTOR][LLM] No valid URLs selected, falling back to simple strategy")
+                
+        except Exception as e:
+            print(f"[SELECTOR][ERROR] LLM selection failed: {e}, falling back to simple strategy")
+        
+        # Fallback: simple position-based selection
+        print(f"[SELECTOR][FALLBACK] Using position-based selection")
+        selected_urls = [r.url for r in search_results[:max_targets]]
+        for url in selected_urls:
+            print(f"🌐 SELECTOR: [FALLBACK] {url}")
         
         return selected_urls
+    
+    def _build_url_selection_prompt(self, user_query: str, entity_name: str, candidates: List[Dict], max_targets: int) -> str:
+        """Build prompt for LLM to select most relevant URLs."""
+        candidates_text = "\n".join([
+            f"{c['index']}. [{c['source']}] {c['title']}\n   URL: {c['url']}\n   Snippet: {c['snippet'][:200]}..."
+            for c in candidates[:30]  # Limit to avoid token overflow
+        ])
+        
+        entity_context = f"The user is asking about: {entity_name}" if entity_name else ""
+        
+        prompt = f"""You are a web search expert. Given a user query and search results, select the {max_targets} most relevant and authoritative URLs to visit.
+
+User Query: {user_query}
+{entity_context}
+
+Selection Criteria (in order of priority):
+1. **Direct Relevance**: URLs that directly answer the query
+2. **Authority**: Official sources, employer websites, personal homepages > news articles > general pages
+   - For person queries: personal homepage, employer profile page, official bio
+   - For company queries: official website, about page
+   - Wikipedia is good but should not replace primary sources
+3. **Freshness**: Prefer recent content when relevant
+4. **Diversity**: Include different types of sources (not all news articles)
+5. **Disambiguation**: If there are multiple entities with the same name, prefer the most relevant one based on query context
+
+Search Results:
+{candidates_text}
+
+Task:
+Select exactly {max_targets} URLs (by index number) that would provide the most comprehensive and accurate information.
+
+Response Format (JSON only, no explanation):
+{{
+  "selected_indices": [1, 3, 7, ...],
+  "reasoning": "Brief explanation of selection strategy"
+}}
+"""
+        return prompt
+    
+    async def _call_llm_for_url_selection(self, prompt: str) -> str:
+        """Call LLM API to select URLs."""
+        if not self.llm_client:
+            raise ValueError("LLM client not available")
+        
+        # Use same model as extractor for consistency
+        cfg = get_config()
+        model_name = cfg.get('models.extractor.model_name', 'gpt-oss-20b')
+        temperature = cfg.get('models.extractor.temperature', 0.0)
+        max_tokens = cfg.get('models.extractor.max_tokens', 1000)
+        
+        try:
+            response = self.llm_client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": "You are a precise web search expert. Always respond with valid JSON only."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=temperature,
+                max_tokens=max_tokens
+            )
+            
+            content = response.choices[0].message.content.strip()
+            return content
+            
+        except Exception as e:
+            print(f"[SELECTOR][LLM] API call failed: {e}")
+            raise
+    
+    def _parse_url_selection_response(self, response: str) -> List[int]:
+        """Parse LLM response to extract selected indices."""
+        import json
+        import re
+        
+        # Try to extract JSON from response
+        json_match = re.search(r'\{[^{}]*"selected_indices"[^{}]*\}', response, re.DOTALL)
+        if json_match:
+            try:
+                data = json.loads(json_match.group(0))
+                indices = data.get("selected_indices", [])
+                print(f"[SELECTOR][LLM] Selected indices: {indices}")
+                print(f"[SELECTOR][LLM] Reasoning: {data.get('reasoning', 'N/A')}")
+                return [int(idx) for idx in indices if isinstance(idx, (int, str)) and str(idx).isdigit()]
+            except (json.JSONDecodeError, ValueError) as e:
+                print(f"[SELECTOR][LLM] JSON parse error: {e}")
+        
+        # Fallback: try to extract numbers from response
+        numbers = re.findall(r'\b(\d+)\b', response)
+        if numbers:
+            indices = [int(n) for n in numbers[:10]]  # Take first 10 numbers found
+            print(f"[SELECTOR][LLM] Extracted indices from text: {indices}")
+            return indices
+        
+        print(f"[SELECTOR][LLM] Could not parse response: {response[:200]}")
+        return []
+
     
     def _create_pages_from_snippets(self, search_results: List[SearchResult]) -> List[WebPage]:
         """Create dummy WebPage objects from search results if web scraping is disabled"""
@@ -1282,9 +686,20 @@ class IR_RAG(Action):
             pages.append(WebPage(
                 url=result.url,
                 title=result.title,
-                content=result.snippet,
+                content=result.snippet or "",
                 headings=[],
-                metadata={'status_code': 200, 'content_type': 'text/html'},
+                metadata={
+                    'status_code': 200,
+                    'content_type': 'text/html',
+                    'source_type': 'snippet',
+                    'pseudo_source': 'SERP_SNIPPET',
+                    'original_url': result.url,
+                    'title': result.title,
+                    'snippet': result.snippet,
+                    'serp_position': result.position,
+                    'snippet_date': result.date,
+                    'snippet_confidence': result.confidence,
+                },
                 fetch_time=0.0,
                 success=True
             ))
@@ -1389,8 +804,9 @@ class IR_RAG(Action):
                 materials.append(f"[{citation_counter}] **{var_name}**: {var_data.value}")
                 citation_counter += 1
         
-        # Add high-confidence search results (continue numbering)
-        for result in search_results[:3]:
+        # Add ALL search snippets (not just top 3) for comprehensive coverage
+        # This ensures we use the rich snippet information from all search results
+        for result in search_results[:20]:  # Use top 10 snippets
             if result.snippet:
                 materials.append(f"[{citation_counter}] {result.title}: {result.snippet}")
                 citation_counter += 1

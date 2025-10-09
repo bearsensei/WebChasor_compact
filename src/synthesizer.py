@@ -127,9 +127,19 @@ class Synthesizer:
     async def generate(self, category, style_key, constraints, materials, task_scaffold=None):
         # directly use render_synthesizer_prompt, it will automatically handle style selection and language detection
         
-        # 1. Auto-detect language
-        auto_lang = detect_lang_4way(materials) # if no user_query, return materials
-        print(f'[SYNTHESIZER][LANG_DEBUG] auto_lang: {auto_lang}')
+        # 1. Extract user query from materials and detect language
+        # Materials format: "Query: {user_query}\n\n**Current Time**: ...\n\nExtracted Information:\n..."
+        user_query = materials
+        if "Query: " in materials:
+            # Extract the original user query (first line after "Query: ")
+            query_start = materials.find("Query: ") + len("Query: ")
+            query_end = materials.find("\n", query_start)
+            if query_end > query_start:
+                user_query = materials[query_start:query_end].strip()
+        
+        # Detect language based on USER QUERY, not materials (to avoid pollution from search results)
+        auto_lang = detect_lang_4way(user_query)
+        print(f'[SYNTHESIZER][LANG_DEBUG] auto_lang: {auto_lang} (detected from user query: {user_query[:50]}...)')
         
         # 2. Get response length config from config.yaml
         cfg = get_config()
@@ -168,7 +178,7 @@ class Synthesizer:
         prompt = render_synthesizer_prompt(
             action_policy=SYNTHESIZER_ACTION_POLICIES.get(category, "Provide helpful and accurate responses."),
             materials=materials,
-            user_query=materials,
+            user_query=user_query,  # Use extracted user query for language detection
             language=auto_lang,
             reading_level=constraints.get("reading_level", "general"),
             preferred_style=(style_key if style_key and style_key != "auto" else None),

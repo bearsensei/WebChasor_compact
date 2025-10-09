@@ -111,31 +111,48 @@ class SerpAPISearch:
             return f"SerpAPI Search Error: {str(e)}"
 
     def get_structured_results(self, query: str, num_results: int = 10, location: str = 'Hong Kong', 
-                             language: str = 'zh-cn', engine: str = 'google', tbs: str = None) -> List[Dict[str, Any]]:
+                             language: str = 'zh-cn', engine: str = 'google', tbs: str = None, gl: str = None) -> List[Dict[str, Any]]:
         """Get structured search results for IR_RAG integration"""
         try:
             if not self.api_key:
                 print("Error: SERPAPI_KEY not configured")
                 return []
             
-            return self._execute_search(query, num_results, location, language, engine, tbs)
+            return self._execute_search(query, num_results, location, language, engine, tbs, gl)
         except Exception as e:
             print(f"SerpAPI Structured Search Error: {e}")
             return []
 
-    def _execute_search(self, query: str, num_results: int, location: str, language: str, engine: str = 'google', tbs: str = None) -> List[Dict[str, Any]]:
+    def _execute_search(self, query: str, num_results: int, location: str, language: str, engine: str = 'google', tbs: str = None, gl: str = None) -> List[Dict[str, Any]]:
         """Execute the actual SerpAPI search"""
+        
+        # Auto-infer gl (geo-location) if not provided
+        if gl is None:
+            # Location to country code mapping
+            location_gl_map = {
+                'hong kong': 'hk',
+                'china': 'cn',
+                'singapore': 'sg',
+                'japan': 'jp',
+                'korea': 'kr',
+                'taiwan': 'tw',
+                'united kingdom': 'uk',
+                'united states': 'us',
+                'canada': 'ca',
+                'australia': 'au'
+            }
+            loc_lower = location.lower()
+            gl = next((code for loc, code in location_gl_map.items() if loc in loc_lower), 'us')
         
         # Prepare search parameters
         search_params = {
-            'engine': engine,  # 使用传入的 engine 参数
+            'engine': engine,
             'q': query,
             'api_key': self.api_key,
-            'num': min(num_results, 10),  # SerpAPI max is 100
+            'num': min(num_results, 100),  # SerpAPI max is 100
             'location': location,
             'hl': language,
-            'gl': 'hk' if 'hong kong' in location.lower() else 'us',
-            'safe': 'active'  # Enable safe search
+            'gl': gl,
         }
         
         # Add time-based filtering if provided
@@ -217,6 +234,7 @@ class SerpAPISearch:
                     })
             
             print(f"SerpAPI returned {len(processed_results)} results")
+            print(f"Processed Results: {processed_results}")
             return processed_results
             
         except requests.RequestException as e:
@@ -280,7 +298,7 @@ class SerpAPISearch:
         
         return formatted
 
-    def _execute_with_retry(self, query: str, num_results: int, location: str, language: str, engine: str, tbs: str = None) -> List[Dict[str, Any]]:
+    def _execute_with_retry(self, query: str, num_results: int, location: str, language: str, engine: str, tbs: str = None, gl: str = None) -> List[Dict[str, Any]]:
         """
         Execute a single SerpAPI search with retries, backoff, and client-side rate limiting.
         """
@@ -289,7 +307,7 @@ class SerpAPISearch:
         while True:
             try:
                 self._rate_limit()
-                return self._execute_search(query, num_results, location, language, engine, tbs)
+                return self._execute_search(query, num_results, location, language, engine, tbs, gl)
             except Exception as e:
                 # _execute_search already catches RequestException/JSON errors and returns []
                 # If we reach here due to an unexpected exception, treat as failure to retry.
@@ -309,6 +327,7 @@ class SerpAPISearch:
         language: str = 'zh-cn',
         engine: str = 'google',
         tbs: str = None,
+        gl: str = None,
         concurrent: int = None,
         qps: int = None,
         retries: int = None
@@ -333,7 +352,7 @@ class SerpAPISearch:
 
         def worker(q: str) -> None:
             try:
-                res = self._execute_with_retry(q, num_results, location, language, engine, tbs)
+                res = self._execute_with_retry(q, num_results, location, language, engine, tbs, gl)
                 out[q] = res
             except Exception as e:
                 print(f"[SerpAPI] Worker error for '{q}': {e}")
@@ -361,12 +380,13 @@ class SerpAPISearch:
         language: str = 'zh-cn',
         engine: str = 'google',
         tbs: str = None,
+        gl: str = None,
         **kwargs
     ) -> List[Dict[str, Any]]:
         """
         Batch search and flatten all results into a single list with `query` annotated.
         """
-        mapping = self.batch_call(queries, num_results, location, language, engine, tbs, **kwargs)
+        mapping = self.batch_call(queries, num_results, location, language, engine, tbs, gl, **kwargs)
         flat: List[Dict[str, Any]] = []
         for q, items in mapping.items():
             for it in items:
