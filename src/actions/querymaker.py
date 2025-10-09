@@ -37,7 +37,17 @@ Today is: {current_date}
 Current year: {current_year}
 Current month: {current_month}
 
+**DIFFICULTY-AWARE SIZE POLICY (internal reasoning only; DO NOT output this section):**
+Silently assess the user's question difficulty:
+- EASY (single fact, narrow scope, low ambiguity, e.g., definition/one entity/current status)
+- MODERATE (multi-entity or light disambiguation, some context dimensions, mild ambiguity)
+- HARD (broad/ambiguous/multi-hop/temporal or policy-heavy, requires triangulation from multiple angles)
 
+Then choose a target size `N` (without revealing it) as:
+- EASY → 1-2 queries
+- MODERATE → 3-5 queries
+- HARD → 6-8 queries
+Finally, cap N by an external limit if provided later (e.g., "Limit total generated queries to about K"). Always respect the cap.
 
 **CRITICAL REQUIREMENTS:**
 
@@ -69,28 +79,44 @@ Current month: {current_month}
 
 **Examples:**
 
-Example 1 (精准示例 - 保持核心实体关联):
-User: 郭毅可什么时候可以当浸会大学校长？
+
+
+Example 0‑EASY (生活化 – 香港，单实体 + 时效性，≤2 queries):
+User: 叶玉如
 JSON:
 {
-  "topic": "郭毅可担任浸会大学校长时间",
-  "entities_core": ["郭毅可","浸会大学","校长"],
-  "entities_added": ["浸会大学校长任期","校董会","任命流程"],
+  "topic": "叶玉如校长",
+  "entities_core": ["叶玉如","校长"],
   "slots": [
-    {"slot":"BIO","queries":["谁是郭毅可","浸会大学是什么"]},
-    {"slot":"CURRENT","queries":["谁是现任浸会大学校长","浸会大学新校长消息 2025"]},
-    {"slot":"RULES","queries":["浸会大学校长任命流程","浸会大学校长任期规定"]},
-    {"slot":"COMPARISON","queries":["浸会大学现任校长任期","郭毅可与现任校长背景对比"]},
-    {"slot":"DATA","queries":["浸会大学历任校长名单","校长交接时间表"]}
+    {"slot":"CURRENT","queries":["叶玉如","叶玉如 新闻 2025"]}
+  ]
+}
+
+
+Example 1 (生活化 – 香港，含2个以上实体 + 定义 + 时效性):
+User: 用八达通搭机场快线现在有折扣吗？什么时候最便宜？
+JSON:
+{
+  "topic": "八达通与机场快线优惠时效",
+  "entities_core": ["八达通(Octopus)","机场快线(Airport Express)","港铁(MTR)"],
+  "entities_added": ["机场管理局(AAHK)","游客/本地乘客票种","二维码乘车(QR)"],
+  "slots": [
+    {"slot":"BIO","queries":["什么是八达通","什么是机场快线"]},
+    {"slot":"CURRENT","queries":["机场快线八达通优惠 2025","机场快线非繁忙时段优惠 2025"]},
+    {"slot":"RULES","queries":["八达通机场快线折扣条件","游客/本地乘客票种适用规则"]},
+    {"slot":"COMPARISON","queries":["八达通 vs 二维码乘车 机场快线","旅游票 vs 单程票 价格对比 2025"]},
+    {"slot":"DATA","queries":["机场快线票价表 2025","八达通积分/回赠规则 2025"]},
+    {"slot":"TIME","queries":["机场快线优惠时段定义 2025","高峰/非高峰 时段说明"]},
+    {"slot":"IMPACT","queries":["航班延误期间优惠适用吗","转线至市区后票价计算方式"]},
+    {"slot":"WILDCARD","queries":["游客购买渠道 城市售票网/柜台","港铁公告 优惠到期时间 2025"]}
   ]
 }
 
 **GOOD vs BAD Examples:**
-✅ GOOD: "郭毅可浸会大学校长任命 2025" - 包含核心实体
-✅ GOOD: "浸会大学前任校长任期" - 相关实体，有助于回答问题
-❌ BAD: "董事会授权校长 2025" - 太泛化，没有提到郭毅可或浸会大学
-❌ BAD: "教务处评估标准 2024" - 完全偏离主题
-
+✅ GOOD: "机场快线八达通优惠 2025" — 包含核心实体与时效性
+✅ GOOD: "香港 八达通 定价 2025" — 相关实体对比，聚焦当前价格
+❌ BAD: "地铁优惠有哪些" — 过于宽泛，未指向机场快线/八达通
+❌ BAD: "交通支付方式历史" — 偏离当下优惠与时间窗口
 ⸻
 
 Example 2 (精准示例 - 政治类):
@@ -317,6 +343,65 @@ class QueryMaker:
             logger.error(f"Failed to initialize OpenAI client: {e}")
             raise
     
+    def _analyze_query_type(self, query: str) -> dict:
+        """
+        Analyze query type to determine optimal number of queries.
+        
+        Returns:
+            dict with query type flags and recommended query count
+        """
+        query_lower = query.lower()
+        query_stripped = query.strip()
+        
+        # Simple query detection (懒人模式：只输入一个名词/名字)
+        # 特征：很短、没有问号、没有动词、单个词或短语
+        is_simple = (
+            len(query_stripped) <= 20 and  # 短查询
+            '?' not in query_stripped and '？' not in query_stripped and  # 没有问号
+            not any(keyword in query_lower for keyword in [
+                '什么', '如何', '怎么', '为什么', '哪', '多少',
+                'what', 'how', 'why', 'when', 'where', 'which', 'who'
+            ]) and  # 没有疑问词
+            len(query_stripped.split()) <= 4  # 词数很少（英文）或字数很少（中文）
+        )
+        
+        # Definition queries (什么是, 是什么, what is, what are, 定义)
+        is_definition = any(keyword in query_lower for keyword in [
+            '什么是', '是什么', 'what is', 'what are', '定义', 'definition',
+            '何为', '何謂', 'define', '概念'
+        ])
+        
+        # Comparison queries (对比, 比较, compare, vs)
+        is_comparison = any(keyword in query_lower for keyword in [
+            '对比', '比较', 'compare', 'comparison', 'vs', 'versus', '差异', '區別'
+        ])
+        
+        # How-to queries (如何, 怎么, how to)
+        is_howto = any(keyword in query_lower for keyword in [
+            '如何', '怎么', '怎样', 'how to', 'how can', 'how do', '怎樣'
+        ])
+        
+        # Determine recommended query count (priority order matters!)
+        # Comparison and How-to should be detected before Simple
+        if is_comparison:
+            recommended = 8  # Comparison: need multiple angles (highest priority)
+        elif is_howto:
+            recommended = 5  # How-to: methods + steps + examples
+        elif is_definition:
+            recommended = 2  # Definition: original + 1 variant
+        elif is_simple:
+            recommended = 2  # Simple: original + 1 enriched query (添加"是什么"/"介绍")
+        else:
+            recommended = self.config.num_queries  # Default from config
+        
+        return {
+            'is_simple': is_simple,
+            'is_definition': is_definition,
+            'is_comparison': is_comparison,
+            'is_howto': is_howto,
+            'recommended_queries': recommended
+        }
+    
     def generate_queries(self, original_query: str, ctx: Optional[Context] = None) -> List[str]:
         """
         Generate diverse search queries based on the original query.
@@ -329,7 +414,18 @@ class QueryMaker:
             List of diverse search queries (includes original query as first item)
         """
         try:
-            logger.info(f"[QueryMaker] Generating {self.config.num_queries} queries for: {original_query[:100]}...")
+            # Analyze query type to determine optimal query count
+            analysis = self._analyze_query_type(original_query)
+            target_queries = analysis['recommended_queries']
+            
+            logger.info(f"[QueryMaker] Query type: simple={analysis['is_simple']}, "
+                       f"def={analysis['is_definition']}, comp={analysis['is_comparison']}, "
+                       f"howto={analysis['is_howto']}, target={target_queries}")
+            
+            if analysis['is_simple']:
+                print(f"[QueryMaker][SIMPLE] Detected simple query (lazy mode): '{original_query}' - using {target_queries} queries")
+            
+            logger.info(f"[QueryMaker] Generating {target_queries} queries for: {original_query[:100]}...")
             
             # Get current time dynamically
             import datetime
@@ -346,7 +442,7 @@ class QueryMaker:
             prompt_with_time = prompt_with_time.replace("{current_month}", current_month)
             prompt_with_time = prompt_with_time.replace("{next_year}", next_year)
             
-            prompt = prompt_with_time + f"\n\n# Constraint: Limit total generated queries to about {self.config.num_queries}."
+            prompt = prompt_with_time + f"\n\n# Constraint: Limit total generated queries to about {target_queries}."
             
             print(f"[QueryMaker][DEBUG] Current time context: {current_date} (Year: {current_year})")
             
@@ -442,8 +538,8 @@ class QueryMaker:
                     valid_queries.remove(original_query)
                     valid_queries = [original_query] + valid_queries
                 
-                # Limit to configured number
-                final_queries = valid_queries[:self.config.num_queries]
+                # Limit to target number (based on query type)
+                final_queries = valid_queries[:target_queries]
                 
                 logger.info(f"[QueryMaker] Generated {len(final_queries)} queries: {final_queries}")
                 return final_queries
@@ -475,7 +571,29 @@ class QueryMaker:
         Returns:
             List containing the original query and simple variations
         """
+        # Analyze query type for fallback as well
+        analysis = self._analyze_query_type(original_query)
+        target_queries = analysis['recommended_queries']
+        
         queries = [original_query]
+        
+        # For simple queries (lazy mode), add one enriched query
+        if analysis['is_simple']:
+            # 检测语言并添加合适的扩展查询
+            if any('\u4e00' <= c <= '\u9fff' for c in original_query):
+                # 中文：添加"介绍"或"是什么"
+                queries.append(f"{original_query} 介绍")
+            else:
+                # 英文：添加"overview"或"introduction"
+                queries.append(f"{original_query} overview")
+            logger.info(f"[QueryMaker][FALLBACK] Using {len(queries)} queries for simple query")
+            return queries
+        
+        # For definition queries, keep it minimal
+        if analysis['is_definition']:
+            # Just return original query for definitions in fallback
+            logger.info(f"[QueryMaker][FALLBACK] Using 1 query for definition type")
+            return queries
         
         # Add time-based variation if time context exists
         if ctx and ctx.time_context and ctx.time_context.window[0]:
@@ -486,8 +604,8 @@ class QueryMaker:
         if "最新" not in original_query and "latest" not in original_query.lower():
             queries.append(f"{original_query} latest")
         
-        logger.info(f"[QueryMaker][FALLBACK] Using {len(queries)} fallback queries")
-        return queries[:self.config.num_queries]
+        logger.info(f"[QueryMaker][FALLBACK] Using {len(queries)} fallback queries (target: {target_queries})")
+        return queries[:target_queries]
 
 
 # Convenience function for direct usage

@@ -269,8 +269,8 @@ class IR_RAG(Action):
             # Step 4: Ranking - Rank content passages by relevance
             ranked_passages = self.ranker.rank_passages(plan, all_pages)
             
-            # Step 5: Extraction - Extract structured information
-            extracted_vars = await self.extractor.extract_variables(plan, ranked_passages, search_results)
+            # Step 5: Extraction - Extract structured information with time context
+            extracted_vars = await self.extractor.extract_variables(plan, ranked_passages, search_results, ctx)
             print(f"[IR_RAG][EXTRACT] variables={len(extracted_vars)}")
             
             # Step 6: Synthesis - Generate final response

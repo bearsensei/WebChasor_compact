@@ -190,12 +190,45 @@ class SerpAPISearch:
                 print(f"Knowledge Graph: {data['knowledge_graph']}")
             # Add answer box first if available
             if answer_box:
+                # Extract snippet from various Answer Box formats
+                snippet = answer_box.get('snippet', '') or answer_box.get('description', '')
+                
+                # For organic_result type Answer Box (e.g., broker data)
+                if answer_box.get('type') == 'organic_result' and answer_box.get('contents'):
+                    contents = answer_box.get('contents', {})
+                    table = contents.get('table', [])
+                    if table:
+                        # Format table data into readable text
+                        table_text = []
+                        for row in table:
+                            if isinstance(row, list) and len(row) >= 2:
+                                table_text.append(f"{row[0]}: {row[1]}")
+                        snippet = snippet + "\n" + "\n".join(table_text) if snippet else "\n".join(table_text)
+                
+                # For finance_results type Answer Box (Google Finance)
+                elif answer_box.get('type') == 'finance_results':
+                    price = answer_box.get('price')
+                    table = answer_box.get('table', [])
+                    price_movement = answer_box.get('price_movement', {})
+                    
+                    finance_text = []
+                    if price:
+                        finance_text.append(f"当前价格: {price} {answer_box.get('currency', '')}")
+                    if price_movement:
+                        finance_text.append(f"涨跌: {price_movement.get('movement', '')} {price_movement.get('price', '')} ({price_movement.get('percentage', '')}%)")
+                        finance_text.append(f"日期: {price_movement.get('date', '')}")
+                    for item in table:
+                        if isinstance(item, dict):
+                            finance_text.append(f"{item.get('name', '')}: {item.get('value', '')}")
+                    
+                    snippet = snippet + "\n" + "\n".join(finance_text) if snippet else "\n".join(finance_text)
+                
                 processed_results.append({
                     'type': 'answer_box',
                     'title': answer_box.get('title', ''),
-                    'snippet': answer_box.get('snippet', ''),
+                    'snippet': snippet,
                     'link': answer_box.get('link', ''),
-                    'source': answer_box.get('displayed_link', '')
+                    'source': answer_box.get('displayed_link', '') or answer_box.get('source', '')
                 })
             
             # Add knowledge graph if available

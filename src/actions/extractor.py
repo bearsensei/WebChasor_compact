@@ -70,7 +70,8 @@ class InformationExtractor:
         self,
         plan: ExtractionPlan,
         ranked_passages: Dict[str, List[ContentPassage]],
-        search_results: Optional[List['SearchResult']] = None
+        search_results: Optional[List['SearchResult']] = None,
+        ctx: Optional[Any] = None
     ) -> Dict[str, ExtractedVariable]:
         """Two-stage extraction using fast snippets first, then deep passages."""
 
@@ -83,7 +84,7 @@ class InformationExtractor:
         stage1_start = time.perf_counter()
 
         # Run Stage 1 concurrently for all tasks
-        stage1_results = await self._run_stage1(plan.tasks_to_extract, ranked_passages)
+        stage1_results = await self._run_stage1(plan.tasks_to_extract, ranked_passages, ctx)
 
         stage1_solved = 0
         for task, passages, stage1_result in stage1_results:
@@ -113,7 +114,7 @@ class InformationExtractor:
         if not unresolved:
             return extracted_vars
 
-        stage2_results = await self._run_stage2(unresolved)
+        stage2_results = await self._run_stage2(unresolved, ctx)
 
         for task, result in stage2_results:
             prior = extracted_vars.get(task.variable_name)
@@ -136,7 +137,8 @@ class InformationExtractor:
     async def _run_stage1(
         self,
         tasks: List[PlanTask],
-        ranked_passages: Dict[str, List[ContentPassage]]
+        ranked_passages: Dict[str, List[ContentPassage]],
+        ctx: Optional[Any] = None
     ) -> List[tuple]:
         """
         Run Stage 1 extraction concurrently for all tasks.
@@ -158,7 +160,7 @@ class InformationExtractor:
 
             if snippet_passages and self.client:
                 async with semaphore:
-                    stage1_result = await self._stage1_extract(task, snippet_passages[:5])
+                    stage1_result = await self._stage1_extract(task, snippet_passages[:5], ctx)
 
             return task, passages, stage1_result
 
@@ -166,7 +168,7 @@ class InformationExtractor:
         results = await asyncio.gather(*[process_task(task) for task in tasks])
         return results
 
-    async def _stage1_extract(self, task: PlanTask, snippet_passages: List[ContentPassage]) -> Optional[ExtractedVariable]:
+    async def _stage1_extract(self, task: PlanTask, snippet_passages: List[ContentPassage], ctx: Optional[Any] = None) -> Optional[ExtractedVariable]:
         """Fast snippet-first extraction using a lightweight model."""
         try:
             result = await self._llm_extract(
@@ -177,14 +179,15 @@ class InformationExtractor:
                 max_tokens=self.small_max_tokens,
                 temperature=self.small_temperature,
                 mode="snippet",
-                allow_fallback=False
+                allow_fallback=False,
+                ctx=ctx
             )
             return result
         except Exception as exc:
             logger.error(f"[EXTRACTOR][STAGE1] Failed for {task.variable_name}: {exc}")
             return None
 
-    async def _run_stage2(self, unresolved: List[tuple]) -> List[tuple]:
+    async def _run_stage2(self, unresolved: List[tuple], ctx: Optional[Any] = None) -> List[tuple]:
         """Run focused deep extraction for unresolved variables concurrently."""
         if not unresolved:
             return []
@@ -200,7 +203,7 @@ class InformationExtractor:
             return results
 
         semaphore = asyncio.Semaphore(max(1, self.stage2_concurrency))
-        tasks = [self._stage2_extract(task, passages, provisional, semaphore) for task, passages, provisional in unresolved]
+        tasks = [self._stage2_extract(task, passages, provisional, semaphore, ctx) for task, passages, provisional in unresolved]
         stage2_outputs = await asyncio.gather(*tasks)
 
         elapsed = time.perf_counter() - stage2_start
@@ -217,7 +220,8 @@ class InformationExtractor:
         task: PlanTask,
         passages: List[ContentPassage],
         provisional: Optional[ExtractedVariable],
-        semaphore: asyncio.Semaphore
+        semaphore: asyncio.Semaphore,
+        ctx: Optional[Any] = None
     ) -> tuple:
         """Run deep extraction with focused passages and caching."""
 
@@ -229,6 +233,7 @@ class InformationExtractor:
             print(f"[EXTRACTOR][Stage2] Cache hit for {task.variable_name}")
             return task, replace(cached)
 
+        focused_passages = focused_passages[:2000]
         async with semaphore:
             try:
                 result = await self._llm_extract(
@@ -239,7 +244,8 @@ class InformationExtractor:
                     max_tokens=self.stage2_max_tokens,
                     temperature=0.1,
                     mode="passage",
-                    allow_fallback=True
+                    allow_fallback=True,
+                    ctx=ctx
                 )
                 if result:
                     self._cache[cache_key] = result
@@ -377,7 +383,8 @@ class InformationExtractor:
         max_tokens: Optional[int] = None,
         temperature: float = 0.1,
         mode: str = "passage",
-        allow_fallback: bool = True
+        allow_fallback: bool = True,
+        ctx: Optional[Any] = None
     ) -> Optional[ExtractedVariable]:
         """Use an LLM to extract information from provided passages."""
 
@@ -397,26 +404,41 @@ class InformationExtractor:
         entities_str = ", ".join(core_entities) if core_entities else "N/A"
         lang = self._detect_language(task.fact + " " + combined_text[:500])
 
+        # Extract time context
+        time_info = ""
+        if ctx and hasattr(ctx, 'time_context') and ctx.time_context:
+            tc = ctx.time_context
+            if tc.window and tc.window[0]:
+                target_date = tc.window[0].split('T')[0]  # Extract YYYY-MM-DD
+                if lang == "zh":
+                    time_info = f"\n\n🔴 严格时间约束：目标日期为 {target_date}。\n- 只能提取标注为 {target_date} 或「昨天」、「昨日」的数据\n- 如果数据标注为「今天」、「当前」、「盘前」、「实时」，则不是 {target_date} 的数据，必须忽略\n- 如果看到多个价格数据，必须找出明确属于 {target_date} 的那个\n- 如果无法确定日期，返回 null 和低置信度"
+                else:
+                    time_info = f"\n\n🔴 STRICT TIME CONSTRAINT: Target date is {target_date}.\n- Only extract data explicitly marked as {target_date} or 'yesterday'\n- If data is marked as 'today', 'current', 'pre-market', or 'real-time', it is NOT from {target_date} and must be ignored\n- If multiple prices exist, find the one explicitly for {target_date}\n- If date cannot be confirmed, return null with low confidence"
+
         context_label = "这些搜索摘要" if lang == "zh" and mode == "snippet" else (
             "这些文本段落" if lang == "zh" else "the search snippets" if mode == "snippet" else "the text passages"
         )
 
         if lang == "zh":
+            priority_note = "\n\n数据源优先级：\n1. 标注「成交」/「收盘」且来自券商数据的Answer Box\n2. 搜索摘要中明确标注日期的数据\n3. 网页正文\n4. 历史数据表格（需确认日期匹配）" if mode == "snippet" else "\n\n数据验证：提取的数据必须来自文本中明确提到的段落，并在 source_quote 中引用原文。"
             prompt = (
-                f"请从{context_label}中提取以下信息，并确保仅依据提供的内容。\n"
+                f"请从{context_label}中提取以下信息，并确保仅依据提供的内容。{time_info}{priority_note}\n\n"
                 f"问题: {task.fact}\n变量名: {task.variable_name}\n类别: {task.category}\n核心实体: {entities_str}\n\n"
                 f"{context_label}:\n{combined_text}\n\n"
-                '输出 JSON：{"value": str|null, "confidence": 0-1, "reasoning": str, "source_quote": str}。'
+                '输出 JSON：{"value": str|null, "confidence": 0-1, "reasoning": str, "source_quote": str}。\n'
+                '注意：reasoning 必须说明该数据来自哪个日期、哪个来源；source_quote 必须包含原文的日期标注。'
             )
-            system_msg = "你是一个专业的信息提取专家。请仅返回有效 JSON，且完全依赖提供的文本。"
+            system_msg = "你是一个专业的信息提取专家，擅长时间敏感的数据提取。请仅返回有效 JSON，且完全依赖提供的文本。规则：1) 当看到「今天」、「当前」、「实时」等词时，这些数据不是目标日期的数据；2) 只提取明确标注了目标日期的数据；3) 如果有多个价格，必须找出日期匹配的那个；4) 不确定时返回 null。"
         else:
+            priority_note = "\n\nData Source Priority:\n1. Answer Box with 'closing'/'成交' label from broker data\n2. Search snippets with explicit date markers\n3. Web page content\n4. Historical tables (must confirm date match)" if mode == "snippet" else "\n\nData Validation: Extracted data must come from explicitly mentioned passages, with source_quote citing the original text."
             prompt = (
-                f"Extract the requested fact strictly from {context_label}. No guessing.\n"
+                f"Extract the requested fact strictly from {context_label}. No guessing.{time_info}{priority_note}\n\n"
                 f"QUESTION: {task.fact}\nVARIABLE: {task.variable_name}\nCATEGORY: {task.category}\nCORE ENTITIES: {entities_str}\n\n"
                 f"{context_label.upper()}:\n{combined_text}\n\n"
-                'Return valid JSON: {"value": str|null, "confidence": 0-1, "reasoning": str, "source_quote": str}.'
+                'Return valid JSON: {"value": str|null, "confidence": 0-1, "reasoning": str, "source_quote": str}.\n'
+                'Note: reasoning must specify which date and source; source_quote must include date markers from the original text.'
             )
-            system_msg = "You are an extraction specialist. Respond with JSON only using the supplied context."
+            system_msg = "You are an expert in time-sensitive data extraction. Respond with JSON only using the supplied context. Rules: 1) When you see 'today', 'current', 'real-time', that data is NOT from the target date; 2) Only extract data explicitly marked with the target date; 3) If multiple prices exist, find the one matching the date; 4) Return null if uncertain."
 
         model_name = model_name or self.model_name
         max_tokens = max_tokens or cfg.get('models.extractor.max_tokens', 4000)

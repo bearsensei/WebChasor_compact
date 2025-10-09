@@ -89,11 +89,6 @@ Your role: act like a project manager. Decompose the user's query into a structu
 
 ## Core Requirements
 - Output MUST be a single valid JSON object, nothing else.  
-- Your plan should include at least 10 key facts to create a comprehensive overview.
-- The plan should be creative and can ask some question that not easy to think about, not only just related the entity, but also related the entities that are related to the asked entity, opposite entities, etc. menmtion some enetity not in the query is good. 
-- Ensure your plan covers different aspects like history, key statistics, purpose, and significance.
-
-
 - Schema (strict) - 
 {
   "plan": {
@@ -114,6 +109,37 @@ Your role: act like a project manager. Decompose the user's query into a structu
     ]
   }
 }
+
+## Task Scoping: Learn from Examples
+
+The number of tasks should match query complexity. Learn from these patterns:
+
+[Simple Fact Query] → 2-4 tasks
+Example: "AMD 股价" or "What is Tesla's stock price?"
+Pattern: Single entity, single attribute, current data
+Tasks: closing_price, currency, exchange, (optional: volume)
+
+[Fact Verification] → 1-2 tasks
+Example: "Tesla 是 2003 年成立的吗？"
+Pattern: Verify a specific claim
+Tasks: tesla_founding_year, (optional: verification_comparison)
+
+[Definition Query] → 3-5 tasks
+Example: "什么是稳定币？" or "What is CRISPR?"
+Pattern: Explain a concept with context
+Tasks: definition, background, key_features, current_status, (optional: examples)
+
+[Two-Entity Comparison] → 6-8 tasks
+Example: "AMD vs NVIDIA 股价对比" or "iPhone 12 vs Galaxy S21 sales"
+Pattern: Compare two entities across multiple dimensions
+Tasks: entity1_metrics (2-3), entity2_metrics (2-3), comparison_analysis (1-2)
+
+[Comprehensive Biography] → 10-14 tasks
+Example: "介绍 LeBron James" or "Who is Elon Musk?"
+Pattern: Person profile with multi-dimensional coverage
+Tasks: birth, identity, early_life, career_timeline, achievements, records, style, recent, off_court, quotes, references
+
+Key principle: Task count grows with (entity_count × dimensions × depth). Simple queries need minimal tasks; comprehensive coverage needs extensive tasks.
 
 ## Guidelines
 1. **Atomic Facts**: each `fact` must be a simple, standalone question answerable from text.  
@@ -308,10 +334,14 @@ Classify the user's latest query by intent using recent conversation context.
 ## CATEGORIES
 - INFORMATION_RETRIEVAL
   → Factual lookup, real-time update, background research, definitions, verification, aggregation, comparisons that require external data.
+  → INCLUDES: First-time entity/person queries (names, organizations, terms) WITHOUT prior conversation context.
+  → INCLUDES: "Who is X?", "What is Y?", or even just "X" or "Y" when there is NO conversation history.
 - GEO_QUERY
   → Location-based queries: finding nearby places, getting directions/routes, geographic searches, transit information, distance calculations.
 - CONVERSATIONAL_FOLLOWUP
-  → Continuation of the prior discussion: clarifications, opinions, reflections, acknowledgments; no new external facts needed. Identity questions in any language should be classified as CONVERSATIONAL_FOLLOWUP.
+  → Continuation of the prior discussion: clarifications, opinions, reflections, acknowledgments; no new external facts needed.
+  → INCLUDES: Identity follow-ups ONLY when there IS prior conversation context (e.g., "Who is he?" after discussing someone).
+  → EXCLUDES: First-time queries about people/entities/terms when there is NO prior conversation.
 - CREATIVE_GENERATION
   → Poems, stories, songs, taglines, role-play, stylistic/creative rewriting beyond purely utilitarian edits.
 - MATH_QUERY
@@ -326,14 +356,58 @@ Classify the user's latest query by intent using recent conversation context.
 ## TIE-BREAKERS (choose the first that applies)
 1) If the user asks about provided/non-text media (image/PDF/chart) → MULTIMODAL_QUERY.
 2) If the query involves locations, places, directions, routes, or geographic searches → GEO_QUERY.
-3) If the answer requires external facts (news, stats, dates, entity definitions, verification) → INFORMATION_RETRIEVAL.
-4) If only numeric computation from given numbers → MATH_QUERY.
-5) If the user requests summarizing/reformatting/extraction/actionable deliverables → TASK_PRODUCTIVITY.
-6) If the user asks for purely creative writing → CREATIVE_GENERATION.
-7) If the user asks for non-factual "why/how" explanation without external data → KNOWLEDGE_REASONING.
-8) Otherwise (clarify/continue/acknowledge) → CONVERSATIONAL_FOLLOWUP.
+3) **CRITICAL**: If there is NO conversation history AND the query is a simple entity/person/term (with or without question marks) → INFORMATION_RETRIEVAL.
+4) If the answer requires external facts (news, stats, dates, entity definitions, verification) → INFORMATION_RETRIEVAL.
+5) If only numeric computation from given numbers → MATH_QUERY.
+6) If the user requests summarizing/reformatting/extraction/actionable deliverables → TASK_PRODUCTIVITY.
+7) If the user asks for purely creative writing → CREATIVE_GENERATION.
+8) If the user asks for non-factual "why/how" explanation without external data → KNOWLEDGE_REASONING.
+9) Otherwise (clarify/continue/acknowledge WITHIN an existing conversation) → CONVERSATIONAL_FOLLOWUP.
+
+## CRITICAL DECISION RULE
+**When [HISTORY] is empty or contains only whitespace:**
+- Treat ANY entity/person/organization/term query as INFORMATION_RETRIEVAL
+- This includes: names, companies, products, technical terms, abbreviations
+- Even if the query lacks question marks or verbs
+- Examples: "郭毅可", "NVDA", "稳定币", "叶玉如校长", "浸会大学"
+
+**When [HISTORY] contains prior conversation:**
+- Identity follow-ups like "他是谁？", "她呢？" → CONVERSATIONAL_FOLLOWUP
+- But new entities not mentioned before → INFORMATION_RETRIEVAL
 
 ## EXAMPLES
+---
+[HISTORY]
+
+[CURRENT]
+User: 叶玉如校长
+[CLASSIFICATION]
+INFORMATION_RETRIEVAL
+(Reason: First-time entity query with NO history → needs external lookup)
+---
+[HISTORY]
+
+[CURRENT]
+User: 郭毅可
+[CLASSIFICATION]
+INFORMATION_RETRIEVAL
+(Reason: First-time person name with NO history → needs external lookup)
+---
+[HISTORY]
+
+[CURRENT]
+User: 什么是稳定币？
+[CLASSIFICATION]
+INFORMATION_RETRIEVAL
+(Reason: Definition query needs external data)
+---
+[HISTORY]
+Assistant: 郭毅可是香港大学的教授，专注于人工智能研究。
+[CURRENT]
+User: 他是谁？
+[CLASSIFICATION]
+CONVERSATIONAL_FOLLOWUP
+(Reason: Identity follow-up WITH conversation history)
 ---
 [HISTORY]
 User: Who directed Inception?
@@ -362,6 +436,22 @@ User: (uploads a chart image)
 User: Extract the 2022 revenue by segment.
 [CLASSIFICATION]
 MULTIMODAL_QUERY
+---
+[HISTORY]
+
+[CURRENT]
+User: NVDA
+[CLASSIFICATION]
+INFORMATION_RETRIEVAL
+(Reason: Stock ticker/entity name with NO history → needs external lookup)
+---
+[HISTORY]
+
+[CURRENT]
+User: 浸会大学
+[CLASSIFICATION]
+INFORMATION_RETRIEVAL
+(Reason: Institution name with NO history → needs external lookup)
 ---
 [HISTORY]
 User: Summarize this paragraph into bullet points.
