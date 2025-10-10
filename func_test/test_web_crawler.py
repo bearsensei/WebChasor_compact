@@ -7,7 +7,8 @@ import sys
 import asyncio
 
 # Add project root and src to path
-project_root = os.path.dirname(os.path.abspath(__file__))
+# Get parent directory since we're in func_test/
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
 sys.path.insert(0, os.path.join(project_root, 'src'))
 
@@ -40,7 +41,7 @@ TEST_MODE = "single"
 # Recommended: Use HTML pages like:
 #   - "https://www.ird.gov.hk/chi/tax/sal.htm"
 #   - "https://www.gov.hk/tc/residents/taxes/etax/services/tax_computation.htm"
-SINGLE_URL = "https://hk.finance.yahoo.com/quote/AMD/"
+SINGLE_URL = "https://zh.wikipedia.org/wiki/%E8%91%89%E7%8E%89%E5%A6%82"
 
 # Batch URLs test
 BATCH_URLS = [

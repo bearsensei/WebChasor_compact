@@ -24,7 +24,7 @@ from actions.gcp_vertex_search import GCPVertexSearch
 from actions.querymaker import QueryMaker
 from config_manager import get_config
 # Import components from standalone modules
-from planner import Planner, PlanTask, ExtractionPlan
+from planner import Planner, ExtractionPlan
 from actions.visitor import WebVisitor, WebPage
 from actions.ranker import ContentRanker, ContentPassage
 from actions.extractor import InformationExtractor, ExtractedVariable
@@ -532,17 +532,22 @@ class IR_RAG(Action):
 
         max_targets = max(1, getattr(self.config, "max_pages_to_visit", 5))
         
-        # Prepare candidates for LLM
+        # Prepare candidates for LLM (filter out empty URLs)
         candidates = []
         for i, result in enumerate(search_results[:30], 1):  # Limit to top 30 to avoid token limits
-            candidates.append({
-                "index": i,
-                "title": result.title or "No title",
-                "url": result.url,
-                "snippet": (result.snippet or "")[:300],  # Truncate long snippets
-                "source": result.source or "",
-                "position": result.position
-            })
+            if result.url and result.url.strip():  # Only include results with valid URLs
+                candidates.append({
+                    "index": i,
+                    "title": result.title or "No title",
+                    "url": result.url,
+                    "snippet": (result.snippet or "")[:300],  # Truncate long snippets
+                    "source": result.source or "",
+                    "position": result.position
+                })
+        
+        if not candidates:
+            print(f"[SELECTOR][WARN] No valid URL candidates found")
+            return []
         
         # Extract query context
         entity_name = plan.entity if plan and plan.entity else ""
@@ -558,16 +563,22 @@ class IR_RAG(Action):
             response = await self._call_llm_for_url_selection(prompt)
             selected_indices = self._parse_url_selection_response(response)
             
-            # Map indices to URLs
+            # Map indices to URLs (filter out empty URLs)
             selected_urls = []
-            for idx in selected_indices[:max_targets]:
+            for idx in selected_indices[:max_targets * 2]:  # Try more indices in case of empty URLs
                 if 1 <= idx <= len(search_results):
                     url = search_results[idx - 1].url
-                    selected_urls.append(url)
-                    print(f"🌐 SELECTOR: [LLM_SELECTED] {url}")
+                    if url and url.strip():  # Filter out empty URLs
+                        selected_urls.append(url)
+                        print(f"🌐 SELECTOR: [LLM_SELECTED] {url}")
+                    else:
+                        print(f"[SELECTOR][WARN] Index {idx} has empty URL, skipping")
+                
+                if len(selected_urls) >= max_targets:  # Stop when we have enough valid URLs
+                    break
             
             if selected_urls:
-                print(f"[SELECTOR][LLM] Successfully selected {len(selected_urls)} URLs")
+                print(f"[SELECTOR][LLM] Successfully selected {len(selected_urls)} valid URLs")
                 return selected_urls
             else:
                 print(f"[SELECTOR][LLM] No valid URLs selected, falling back to simple strategy")
@@ -575,11 +586,15 @@ class IR_RAG(Action):
         except Exception as e:
             print(f"[SELECTOR][ERROR] LLM selection failed: {e}, falling back to simple strategy")
         
-        # Fallback: simple position-based selection
+        # Fallback: simple position-based selection (filter out empty URLs)
         print(f"[SELECTOR][FALLBACK] Using position-based selection")
-        selected_urls = [r.url for r in search_results[:max_targets]]
-        for url in selected_urls:
-            print(f"🌐 SELECTOR: [FALLBACK] {url}")
+        selected_urls = []
+        for r in search_results[:max_targets * 2]:  # Check more results in case of empty URLs
+            if r.url and r.url.strip():
+                selected_urls.append(r.url)
+                print(f"🌐 SELECTOR: [FALLBACK] {r.url}")
+                if len(selected_urls) >= max_targets:
+                    break
         
         return selected_urls
     
@@ -727,7 +742,7 @@ Response Format (JSON only, no explanation):
         
         # Create synthesis prompt
         synthesis_prompt = f"""
-        Based on the extracted information, provide a comprehensive answer to: {ctx.query}. You MUST use all retrieved information, no missing information. Be as comprehensive as possible. Add background information if there is any possible.
+        Based on the extracted information, provide a comprehensive answer to: {ctx.query}. You MUST use all retrieved information, no missing information. While introduce timeline, do not include year, period, etc. Accuracy is Everything!!! Be as comprehensive as possible. Add background information if there is any possible.
         
         **IMPORTANT TIME CONTEXT**:
         {time_info}
@@ -738,13 +753,14 @@ Response Format (JSON only, no explanation):
         Please provide a well-structured response with:
         1. Clear sections based on the information found
         2. DO NOT include any citation numbers like [1], [2], etc. in the main text
-        3. Use diverse formatting: include bullet points, numbered lists, comparison tables where appropriate
-        4. For key facts/statistics/comparisons, use tables or lists instead of long paragraphs
-        5. Mix paragraph text with structured formats (lists, tables) for better readability
-        6. Factual accuracy based on the sources
-        7. **Time awareness**: The current time is {current_time}. Filter and present information based on this current time. Distinguish between past, present, and future events clearly.
-        8. Include a "References" or "参考来源" section at the very end listing all sources
-        9. MUST use all retrieved information, no missing information.
+        3. While introduce timeline, do not include year, period, etc. 
+        4. Use diverse formatting: include bullet points, numbered lists, comparison tables where appropriate
+        5. For key facts/statistics/comparisons, use tables or lists instead of long paragraphs
+        6. Mix paragraph text with structured formats (lists, tables) for better readability
+        7. Factual accuracy based on the sources
+        8. **Time awareness**: The current time is {current_time}. Filter and present information based on this current time. Distinguish between past, present, and future events clearly.
+        9. Include a "References" or "参考来源" section at the very end listing all sources
+        10. MUST use all retrieved information, no missing information.
         """
         
 

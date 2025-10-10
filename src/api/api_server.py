@@ -192,10 +192,11 @@ def format_content_for_chatbox(content: str) -> str:
 # ------------------------------
 # 并行：假思考（OpenAI流式） + 主回答
 # ------------------------------
-async def thinking_stream_sse(query: str, request_model: str):
+async def thinking_stream_sse(query: str, request_model: str, stop_event: asyncio.Event = None):
     """
     参照 thinking_coordinator/thinking_planner 的提示词与行为，
     用 OpenAI 流式生成 <think>…</think>，但不在此处输出 [DONE]。
+    支持通过 stop_event 提前停止
     """
     cfg = get_config()
     api_base = cfg.get('external_services.openai.api_base', 'https://api.openai.com/v1')
@@ -230,6 +231,10 @@ async def thinking_stream_sse(query: str, request_model: str):
         )
         # 模拟打字输出
         for i in range(0, len(fallback), 40):
+            # Check stop signal
+            if stop_event and stop_event.is_set():
+                break
+                
             chunk_text = fallback[i:i+40]
             chunk_data = {
                 "id": f"chatcmpl-{uuid.uuid4().hex[:8]}",
@@ -243,7 +248,7 @@ async def thinking_stream_sse(query: str, request_model: str):
                 }]
             }
             yield f"data: {json.dumps(chunk_data, ensure_ascii=False)}\n\n"
-            await asyncio.sleep(0.03)
+            # No artificial delay - output naturally
     else:
         # 有 key：使用 ThinkingPlan 生成思考过程
         try:
@@ -253,6 +258,25 @@ async def thinking_stream_sse(query: str, request_model: str):
             
             # Build thinking prompt using ThinkingPlan
             thinking_prompt = ThinkingPlan.build_thinking_prompt(query)
+            
+            # Track start time BEFORE outputting anything (from user's perspective)
+            thinking_start = time.time()
+            min_display_time = 6.0  # Minimum 6 seconds of thinking display
+            
+            # Output immediate feedback while waiting for API (fill the gap)
+            immediate_feedback = f"正在分析问题：{query[:50]}...\n\n"
+            immediate_chunk = {
+                "id": f"chatcmpl-{uuid.uuid4().hex[:8]}",
+                "object": "chat.completion.chunk",
+                "created": int(time.time()),
+                "model": request_model,
+                "choices": [{
+                    "index": 0,
+                    "delta": {"content": immediate_feedback},
+                    "finish_reason": None
+                }]
+            }
+            yield f"data: {json.dumps(immediate_chunk, ensure_ascii=False)}\n\n"
             
             stream = client.chat.completions.create(
                 model=model,
@@ -264,13 +288,24 @@ async def thinking_stream_sse(query: str, request_model: str):
                     "content": thinking_prompt
                 }],
                 temperature=0.3,
-                max_tokens=1000,
+                max_tokens=4000,
                 stream=True
             )
-            # 直接透传 OpenAI 的流式增量（只传 content 增量）
+            
+            print(f"[THINKING][STREAM] OpenAI stream started, waiting for chunks...")
+            chunk_count = 0
+            
+            # Stream LLM output
             for chunk in stream:
+                chunk_count += 1
+                # Only respect stop signal after minimum display time
+                if stop_event and stop_event.is_set():
+                    elapsed = time.time() - thinking_start
+                    if elapsed >= min_display_time:
+                        break
+                    # Otherwise, ignore stop signal and continue displaying
+                    
                 if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content is not None:
-                    # 适配 chatbox：包一层我们自己的 chunk 形态更稳妥
                     proxy = {
                         "id": f"chatcmpl-{uuid.uuid4().hex[:8]}",
                         "object": "chat.completion.chunk",
@@ -282,8 +317,14 @@ async def thinking_stream_sse(query: str, request_model: str):
                             "finish_reason": None
                         }]
                     }
-                    # await asyncio.sleep(0.02)
                     yield f"data: {json.dumps(proxy, ensure_ascii=False)}\n\n"
+                    # Tiny delay to prevent network batching, but keep cumulative overhead low
+                    # 1123 chunks * 0.002s = 2.2s overhead (acceptable)
+                    await asyncio.sleep(0.002)
+            
+            elapsed = time.time() - thinking_start
+            print(f"[THINKING][STREAM] Completed: {chunk_count} chunks in {elapsed:.2f}s")
+                    
         except Exception as e:
             print(f"[API][ERROR] ThinkingPlan generation failed: {e}")
             error_chunk = {
@@ -339,15 +380,22 @@ async def generate_openai_compatible_stream(request: ChatCompletionRequest):
 
     try:
         print(f"[API][STREAM] Starting parallel execution: thinking + main query...")
+        
+        # Create stop event for early termination
+        stop_event = asyncio.Event()
+        
         # 立即启动主查询任务（真正的并行）
         print(f"[API][STREAM] Starting main query task...")
         main_task = asyncio.create_task(webchasor_service.execute_query(user_message))
+        
         # 同时启动思考过程，实时输出（独立协程生成器）
         print(f"[API][STREAM] Streaming thinking process...")
-        async for thinking_chunk in thinking_stream_sse(user_message, request.model):
+        async for thinking_chunk in thinking_stream_sse(user_message, request.model, stop_event):
             yield thinking_chunk
-            # 期间非阻塞检查主查询是否完成（无需中断思考）
-            # if main_task.done(): pass  # 可加日志
+            # 检查主查询是否完成，如果完成则发送停止信号
+            if main_task.done() and not stop_event.is_set():
+                print(f"[API][STREAM] Main query completed, signaling thinking to stop...")
+                stop_event.set()
 
         print(f"[API][STREAM] Thinking process completed")
 

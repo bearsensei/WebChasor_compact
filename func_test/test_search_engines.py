@@ -6,7 +6,8 @@ import os
 import sys
 
 # Add project root and src to path
-project_root = os.path.dirname(os.path.abspath(__file__))
+# Since this file is in func_test/, go up one level to get project root
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
 sys.path.insert(0, os.path.join(project_root, 'src'))
 
@@ -32,7 +33,7 @@ from config_manager import get_config
 # ============================================================================
 
 # Search query
-QUERY = "香港个人税怎么算？"
+QUERY = "birthday of PRof. YIke GUO"
 
 # Which providers to test: 'serpapi', 'gcp', or 'both'
 PROVIDER = "both"

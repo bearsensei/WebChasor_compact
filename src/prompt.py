@@ -129,15 +129,28 @@ Example: "什么是稳定币？" or "What is CRISPR?"
 Pattern: Explain a concept with context
 Tasks: definition, background, key_features, current_status, (optional: examples)
 
-[Two-Entity Comparison] → 6-8 tasks
+[Two-Entity Comparison] → 8-10 tasks
 Example: "AMD vs NVIDIA 股价对比" or "iPhone 12 vs Galaxy S21 sales"
 Pattern: Compare two entities across multiple dimensions
 Tasks: entity1_metrics (2-3), entity2_metrics (2-3), comparison_analysis (1-2)
 
-[Comprehensive Biography] → 10-14 tasks
+[Trend Analysis] → 8-10 tasks
+Example: Will US stock market continue to rise?
+Pattern: Analyze a trend with context
+Tasks: trend_analysis, current_status, history lessons, future factors: productivity, politics, geo-politics, culture etc (optional: examples)
+
+[Comprehensive Biography] → 6-8 tasks
 Example: "介绍 LeBron James" or "Who is Elon Musk?"
-Pattern: Person profile with multi-dimensional coverage
-Tasks: birth, identity, early_life, career_timeline, achievements, records, style, recent, off_court, quotes, references
+Pattern: Person profile with multi-dimensional coverage AND temporal precision
+Tasks: birth_year_and_place, education_with_years, career_timeline_with_years, major_achievements_with_years, awards_and_years, current_position_and_year, notable_contributions, (optional: quotes, references)
+
+CRITICAL for biography tasks:
+- Any task involving positions/awards/events MUST include temporal indicators in variable_name
+- Use "_with_years", "_timeline", "_and_year" suffixes
+- Fact description must explicitly ask for year: "When did X become Y? (year required)"
+- Examples:
+  ✅ GOOD: {"variable_name": "president_appointment_year", "fact": "When was X appointed as president? (year required)"}
+  ❌ BAD:  {"variable_name": "position", "fact": "What is X's position?"}
 
 Key principle: Task count grows with (entity_count × dimensions × depth). Simple queries need minimal tasks; comprehensive coverage needs extensive tasks.
 
@@ -163,6 +176,15 @@ Key principle: Task count grows with (entity_count × dimensions × depth). Simp
 6. **Multi-hop**: if query requires multiple layers, create intermediate facts with variable names, then combine in `final_calculation`.  
 7. **Definition-first strategy**: if the query involves an unknown/technical entity, add a task to define/identify it before using it.  
 8. **Determinism**: always respect schema; no free-form text outside JSON.
+9. **Temporal Precision Rule**: For any facts involving career positions, awards, honors, appointments, achievements, or events:
+   - Variable names MUST include temporal indicators: use "_with_years", "_timeline", "_year", "_and_year" suffixes
+   - Fact descriptions MUST explicitly request year/date information: "When did X happen?" or "X的具体年份"
+   - Set category appropriately (biography, timeline, aggregation, etc.)
+   - Examples:
+     - ✅ GOOD: {"variable_name": "president_appointment_year", "fact": "When was X appointed president? (year required)", "category": "biography"}
+     - ✅ GOOD: {"variable_name": "career_timeline_with_years", "fact": "List all career positions with start and end years", "category": "timeline"}
+     - ❌ BAD: {"variable_name": "current_position", "fact": "What is X's current position?", "category": "biography"}
+     - ❌ BAD: {"variable_name": "awards", "fact": "What awards has X received?", "category": "aggregation"}
 
 ## Examples
 ---

@@ -80,7 +80,7 @@ async def run_demo():
     
     # Demo queries - mix of different types
     queries = [
-        "amd 股价",  # Test query
+        "郭毅可教授生日",  # Test query
     ]
     
     print("[DEMO][START] WebChasor Demo")

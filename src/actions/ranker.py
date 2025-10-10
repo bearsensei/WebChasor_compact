@@ -177,7 +177,53 @@ class ContentRanker:
         if re.search(r'^\s*[-•*]\s', chunk, re.MULTILINE):  # Lists
             score += 0.2
         
+        # Apply source-based weighting
+        source_weight = self._get_source_weight(page)
+        score *= source_weight
+        
         return score
+    
+    def _get_source_weight(self, page: WebPage) -> float:
+        """
+        Calculate source weight based on content type and quality indicators.
+        Uses dynamic heuristics, not hardcoded domain lists.
+        """
+        metadata = page.metadata or {}
+        
+        # Base weight = 1.0
+        weight = 1.0
+        
+        # Factor 1: Content type priority
+        source_type = metadata.get('source_type', 'unknown')
+        extraction_type = metadata.get('extraction_type', 'standard')
+        
+        if source_type == 'snippet':
+            # Snippets are good for Answer Boxes but lack context
+            weight = 1.0
+        elif source_type == 'webpage':
+            # Full web pages have more context
+            weight = 1.2
+            
+            # Factor 2: Content richness (Wikipedia-like, Baike-like)
+            if extraction_type in ('wikipedia', 'wikipedia_optimized'):
+                weight = 1.5  # Wikipedia optimized content
+            elif extraction_type == 'pdf':
+                weight = 1.3  # PDF documents (usually official/academic)
+        
+        # Factor 3: Content quality indicators
+        content_length = len(page.content.split())
+        if content_length > 500:  # Rich content
+            weight *= 1.1
+        elif content_length < 100:  # Too short
+            weight *= 0.8
+        
+        # Factor 4: Structured content indicators (infobox, sections)
+        if metadata.get('has_infobox'):
+            weight *= 1.2
+        if metadata.get('section_count', 0) > 5:  # Well-structured article
+            weight *= 1.1
+        
+        return weight
     
     def _find_heading_context(self, chunk: str, headings: List[str]) -> str:
         """Find the most relevant heading for this chunk"""

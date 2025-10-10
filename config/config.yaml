@@ -28,12 +28,12 @@ ir_rag:
   content:
     chunk_overlap: 50           # Overlap between text chunks in characters
     chunk_size: 500             # Size of text chunks in characters
-    max_passages_per_task: 10   # Maximum passages to retrieve per task (balanced for speed and coverage)
+    max_passages_per_task: 6   # Maximum passages to retrieve per task (balanced for speed and coverage)
     min_passage_length: 20      # Minimum length for valid passages
   
   # Information extraction settings
   extraction:
-    confidence_threshold: 0.7      # Minimum confidence score for extractions
+    confidence_threshold: 0.6      # Minimum confidence score for extractions
     enable_ner_fallback: true     # Enable Named Entity Recognition fallback
     enable_regex_fallback: true   # Enable regex pattern fallback
     max_extraction_attempts: 3    # Maximum attempts for extraction
@@ -78,7 +78,7 @@ ir_rag:
   # Web scraping configuration
   web_scraping:
     enabled: true                    # Enable web scraping functionality
-    max_pages: 5                   # Maximum pages to scrape per request
+    max_pages: 3                   # Maximum pages to scrape per request
     parallel_fetch: true            # Enable parallel page fetching
     retry_attempts: 2               # Number of retry attempts
     timeout: 10                     # Timeout in seconds
@@ -111,24 +111,24 @@ models:
   # Information extraction model
   extractor:
     fallback_enabled: true       # Enable fallback mechanisms
-    max_tokens: 5000            # Maximum tokens for extraction
+    max_tokens: 2000            # Maximum tokens for extraction
     model_name: gpt-oss-20b   # Model name for extraction
     provider: openai            # Model provider
-    temperature: 0.0            # Temperature for deterministic output
+    temperature: 0.1            # Temperature for deterministic output
   
   # Task planning model
   planner:
     fallback_enabled: true       # Enable fallback mechanisms
-    max_tokens: 3000            # Maximum tokens for planning (increased for complex plans)
+    max_tokens: 4000            # Maximum tokens for planning (increased to prevent JSON truncation)
     model_name: gpt-oss-20b           # Model name for planning
     provider: openai            # Model provider
-    temperature: 0.8            # Low temperature for consistent planning (JSON generation)
+    temperature: 0.5            # Low temperature for consistent planning (JSON generation)
   
   # Request routing model
   router:
     fallback_enabled: true       # Enable fallback mechanisms
     max_tokens: 500             # Maximum tokens for routing decisions
-    model_name: gpt-oss-120b   # Model name for routing
+    model_name: gpt-oss-20b   # Model name for routing
     provider: openai            # Model provider
     temperature: 0.5            # Low temperature for consistent routing
   
@@ -138,7 +138,7 @@ models:
     max_tokens: 50000             # Maximum tokens for synthesis (optimized for detailed answers)
     model_name: gpt-oss-120b           # Model name for synthesis
     provider: openai            # Model provider
-    temperature: 0.8             # Balanced temperature for natural, detailed responses
+    temperature: 0.4             # Balanced temperature for natural, detailed responses
   
   # Reasoning analysis model
   reasoning:
@@ -364,8 +364,8 @@ geo_query:
 response_length:
   # Information Retrieval responses
   information_retrieval:
-    max_tokens: 20000          # Maximum tokens for IR_RAG responses (comprehensive analysis)
-    temperature: 0.8          # Temperature for IR_RAG
+    max_tokens: 15000          # Maximum tokens for IR_RAG responses (comprehensive analysis)
+    temperature: 0.2          # Temperature for IR_RAG
     
   # Knowledge Reasoning responses  
   knowledge_reasoning:

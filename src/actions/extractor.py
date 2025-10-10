@@ -141,12 +141,84 @@ class InformationExtractor:
         ctx: Optional[Any] = None
     ) -> List[tuple]:
         """
-        Run Stage 1 extraction concurrently for all tasks.
+        Run Stage 1 extraction using batch mode for efficiency.
+        Extracts all tasks in one LLM call with shared passages.
         Returns list of (task, passages, stage1_result) tuples.
         """
         if not tasks:
             return []
 
+        # Try batch extraction first (more efficient)
+        try:
+            batch_results = await self._run_stage1_batch(tasks, ranked_passages, ctx)
+            if batch_results:
+                return batch_results
+        except Exception as e:
+            print(f"[EXTRACTOR][Stage1] Batch mode failed: {e}, falling back to individual extraction")
+        
+        # Fallback to individual extraction if batch fails
+        return await self._run_stage1_individual(tasks, ranked_passages, ctx)
+    
+    async def _run_stage1_batch(
+        self,
+        tasks: List[PlanTask],
+        ranked_passages: Dict[str, List[ContentPassage]],
+        ctx: Optional[Any] = None
+    ) -> List[tuple]:
+        """
+        Batch extraction: extract all tasks in one LLM call.
+        More efficient and provides global context for deduplication.
+        """
+        if not tasks or not self.client:
+            return None
+        
+        # Step 1: Merge and deduplicate passages from all tasks
+        all_passages_dict = {}
+        for task in tasks:
+            passages = ranked_passages.get(task.variable_name, [])
+            for p in passages:
+                # Use URL as key for deduplication
+                key = f"{p.source_url}::{p.text[:100]}"  # Include text prefix for better deduplication
+                if key not in all_passages_dict or p.score > all_passages_dict[key].score:
+                    all_passages_dict[key] = p
+        
+        # Step 2: Filter to snippets only and sort by score
+        snippet_passages = [
+            p for p in all_passages_dict.values() 
+            if p.source_url == "SERP_SNIPPET"
+        ]
+        snippet_passages.sort(key=lambda p: p.score, reverse=True)
+        
+        # Step 3: Limit to top snippets to avoid token overflow
+        top_snippets = snippet_passages[:15]  # Top 15 most relevant snippets
+        
+        if not top_snippets:
+            print(f"[EXTRACTOR][Stage1-Batch] No snippets available for batch extraction")
+            return None
+        
+        print(f"[EXTRACTOR][Stage1-Batch] Extracting {len(tasks)} tasks from {len(top_snippets)} shared snippets")
+        
+        # Step 4: Batch extract all tasks
+        batch_results = await self._batch_extract(tasks, top_snippets, ctx, stage="stage1")
+        
+        # Step 5: Map results back to (task, passages, result) format
+        results = []
+        for task in tasks:
+            passages = ranked_passages.get(task.variable_name, [])
+            result = batch_results.get(task.variable_name)
+            results.append((task, passages, result))
+        
+        return results
+    
+    async def _run_stage1_individual(
+        self,
+        tasks: List[PlanTask],
+        ranked_passages: Dict[str, List[ContentPassage]],
+        ctx: Optional[Any] = None
+    ) -> List[tuple]:
+        """
+        Original individual extraction logic as fallback.
+        """
         semaphore = asyncio.Semaphore(max(1, self.stage1_concurrency))
         
         async def process_task(task: PlanTask) -> tuple:
@@ -186,6 +258,226 @@ class InformationExtractor:
         except Exception as exc:
             logger.error(f"[EXTRACTOR][STAGE1] Failed for {task.variable_name}: {exc}")
             return None
+    
+    async def _batch_extract(
+        self,
+        tasks: List[PlanTask],
+        passages: List[ContentPassage],
+        ctx: Optional[Any] = None,
+        stage: str = "stage1"
+    ) -> Dict[str, ExtractedVariable]:
+        """
+        Batch extract multiple tasks from shared passages in one LLM call.
+        More efficient and provides global context for automatic deduplication.
+        """
+        if not tasks or not passages or not self.client:
+            return {}
+        
+        cfg = get_config()
+        
+        # Step 1: Format passages as structured EVIDENCE
+        combined_text, provenance, raw_texts = self._format_passages(passages, mode="snippet")
+        
+        if not combined_text.strip():
+            return {}
+        
+        # Step 2: Build PLAN_TASKS JSON (all tasks)
+        plan_tasks_json = json.dumps([
+            {
+                "variable_name": task.variable_name,
+                "fact": task.fact,
+                "category": task.category
+            }
+            for task in tasks
+        ], ensure_ascii=False)
+        
+        # Step 3: Detect language
+        lang = self._detect_language(tasks[0].fact + " " + combined_text[:500])
+        
+        # Step 4: Extract time context
+        time_rules = ""
+        if ctx and hasattr(ctx, 'time_context') and ctx.time_context:
+            tc = ctx.time_context
+            if tc.window and tc.window[0]:
+                target_date = tc.window[0].split('T')[0]
+                if lang == "zh":
+                    time_rules = f"\n\n时间规则：目标日期 = {target_date}。只接受明确标注此日期的数据。"
+                else:
+                    time_rules = f"\n\nTime Rule: Target date = {target_date}. Only accept data explicitly marked with this date."
+        
+        # Step 5: Build prompt
+        if lang == "zh":
+            system_msg = """你是结构化提取专家。从EVIDENCE中提取所有PLAN_TASKS要求的事实。
+输出严格JSON，不猜测。如缺失或冲突，标注"status":"unverified"或"conflict"。
+
+批量提取规则：
+- 为每个task返回一个result
+- 从所有EVIDENCE中找到最相关的信息
+- 如果多个tasks语义重复（如achievements和notable_facts），合并到一个task中，其他返回null
+- 如果某task没有信息，返回"status":"unverified", "value":null
+
+时间信息提取规则（重要）：
+- 任何职位、奖项、事件、成就都必须提取年份
+- 年份必须与事件明确关联（同句或邻近±120字符）
+- 忽略页面元数据日期（"更新于"、"发布于"）
+- 职业/奖项格式："Position (YYYY)" 或 "Position, started YYYY"
+- 如果找不到年份但事实存在，value正常填写，notes中说明"年份未找到"
+- 区分事件类型：当选/任命/就职/卸任/获奖，每个都要标注年份
+"""
+            prompt = f"""INPUT
+PLAN_TASKS: {plan_tasks_json}
+EVIDENCE: {combined_text}{time_rules}
+
+OUTPUT JSON SCHEMA
+{{
+  "results": [
+    {{
+      "variable_name": "...", 
+      "status": "ok"|"unverified"|"conflict",
+      "value": "string (if temporal: include year as 'Position (YYYY)' or '事件 (YYYY年)')",
+      "source_ids": [1,2],
+      "notes": "简短原因，如涉及时间但未找到年份，必须说明"
+    }},
+    ...
+  ]
+}}
+
+要求：
+1. 为PLAN_TASKS中的每个task返回一个result
+2. 从EVIDENCE中选择最相关的信息
+3. 特别注意：如果task涉及职位/奖项/事件，value中必须包含年份信息
+4. 如果发现tasks重复，优先填充第一个，其他返回null
+5. 仅返回JSON，不要解释。"""
+        else:
+            system_msg = """You are a Structured Extractor. Extract all PLAN_TASKS from EVIDENCE in one batch.
+Output STRICT JSON only. Do NOT guess. If missing or conflicting, mark "status":"unverified" or "conflict".
+
+Batch extraction rules:
+- Return one result for each task
+- Find the most relevant information from all EVIDENCE
+- If multiple tasks are semantically duplicate (e.g. achievements and notable_facts), merge into one task, return null for others
+- If no information for a task, return "status":"unverified", "value":null
+
+Temporal Information Extraction Rules (CRITICAL):
+- ANY position, award, event, or achievement MUST include the year
+- Year must be explicitly linked to the event (same sentence or within ±120 chars)
+- Ignore page meta dates ("updated on", "published on", "last modified")
+- Format for positions/awards: "Position (YYYY)" or "Position, started YYYY"
+- If year not found but fact exists, fill value normally and note "year not found" in notes
+- Distinguish event types: elected/appointed/assumed/resigned/awarded, each with year
+"""
+            prompt = f"""INPUT
+PLAN_TASKS: {plan_tasks_json}
+EVIDENCE: {combined_text}{time_rules}
+
+OUTPUT JSON SCHEMA
+{{
+  "results": [
+    {{
+      "variable_name": "...", 
+      "status": "ok"|"unverified"|"conflict",
+      "value": "string (if temporal: include year as 'Position (YYYY)' or 'Event in YYYY')",
+      "source_ids": [1,2],
+      "notes": "short reason, if temporal but year not found, must explain"
+    }},
+    ...
+  ]
+}}
+
+Requirements:
+1. Return one result for each task in PLAN_TASKS
+2. Select most relevant information from EVIDENCE
+3. CRITICAL: If task involves position/award/event, value MUST include year information
+4. If tasks are duplicate, prioritize first one, return null for others
+5. Return JSON only, no explanation."""
+        
+        # Step 6: Call LLM
+        model_name = self.small_model_name if stage == "stage1" else self.model_name
+        max_tokens = (self.small_max_tokens * 2) if stage == "stage1" else (self.stage2_max_tokens * 2)
+        
+        try:
+            response = self.client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": system_msg},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.0,  # Deterministic for batch extraction
+                max_tokens=max_tokens,
+                response_format={"type": "json_object"}
+            )
+        except Exception as api_error:
+            print(f"[EXTRACTOR][BATCH] response_format not supported, retrying without it")
+            response = self.client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": system_msg},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.0,
+                max_tokens=max_tokens
+            )
+        
+        # Step 7: Parse results
+        result_text = (response.choices[0].message.content or "").strip()
+        if not result_text:
+            print(f"[EXTRACTOR][BATCH] Empty LLM response")
+            return {}
+        
+        try:
+            result_data = json.loads(result_text)
+        except json.JSONDecodeError as err:
+            print(f"[EXTRACTOR][BATCH] JSON decode failed: {err}")
+            print(f"[EXTRACTOR][BATCH] Raw response: {result_text[:200]}")
+            return {}
+        
+        # Step 8: Map results back to ExtractedVariable format
+        extracted_vars = {}
+        results = result_data.get("results", [])
+        
+        for result in results:
+            var_name = result.get("variable_name")
+            if not var_name:
+                continue
+            
+            status = result.get("status", "ok")
+            value = result.get("value")
+            notes = result.get("notes", "")
+            
+            # Calculate confidence based on status
+            if status == "ok":
+                confidence = 0.95
+            elif status == "unverified":
+                confidence = 0.60
+            elif status == "conflict":
+                confidence = 0.40
+            else:
+                confidence = 0.50
+            
+            # Map source_ids to provenance URLs
+            source_ids = result.get("source_ids", [])
+            selected_provenance = [provenance[i-1] for i in source_ids if 1 <= i <= len(provenance)]
+            if not selected_provenance:
+                selected_provenance = provenance[:3]  # Use first 3 as fallback
+            
+            extracted_vars[var_name] = ExtractedVariable(
+                variable_name=var_name,
+                value=value,
+                confidence=confidence,
+                provenance=selected_provenance,
+                extraction_method=f"batch-{stage}",
+                raw_passages=raw_texts[:3]  # Include sample passages
+            )
+            
+            if cfg.is_decision_logging_enabled('ir_rag'):
+                print(
+                    f"[EXTRACTOR][BATCH] {var_name}: value={str(value)[:50]}... "
+                    f"confidence={confidence:.2f} status={status}"
+                )
+        
+        print(f"[EXTRACTOR][BATCH] Successfully extracted {len(extracted_vars)}/{len(tasks)} tasks")
+        
+        return extracted_vars
 
     async def _run_stage2(self, unresolved: List[tuple], ctx: Optional[Any] = None) -> List[tuple]:
         """Run focused deep extraction for unresolved variables concurrently."""
@@ -286,17 +578,17 @@ class InformationExtractor:
         return unique_passages
 
     def _format_passages(self, passages: List[ContentPassage], mode: str) -> tuple:
-        """Create human-readable blocks and provenance for prompts."""
-        blocks = []
+        """Create structured EVIDENCE list for entity-value extraction."""
+        evidence_list = []
         provenance = []
         raw_texts = []
 
         for idx, passage in enumerate(passages, 1):
             meta = passage.metadata or {}
-            label = "Snippet" if passage.source_url == "SERP_SNIPPET" else "Passage"
             title = meta.get('title') or meta.get('page_title') or ""
             provenance_id = meta.get('provenance', passage.source_url)
             snippet_date = meta.get('snippet_date')
+            
             if mode == "snippet" and meta.get('snippet'):
                 body_text = meta['snippet']
             else:
@@ -305,18 +597,22 @@ class InformationExtractor:
             raw_texts.append(body_text)
             provenance.append(provenance_id)
 
-            header_parts = [f"{label} {idx}"]
-            if title:
-                header_parts.append(f"Title: {title}")
-            header_parts.append(f"Source: {provenance_id}")
+            # Structured format
+            evidence_item = {
+                "id": idx,
+                "url": provenance_id,
+                "title": title,
+                "snippet": body_text[:500] if len(body_text) > 500 else body_text,  # Limit length
+                "type": "snippet" if passage.source_url == "SERP_SNIPPET" else "webpage"
+            }
             if snippet_date:
-                header_parts.append(f"Date: {snippet_date}")
+                evidence_item["date"] = snippet_date
+            
+            evidence_list.append(evidence_item)
 
-            block = "\n".join(header_parts + [body_text])
-            blocks.append(block)
-
-        combined_text = "\n\n".join(blocks)
-        return combined_text, provenance, raw_texts
+        # Format as JSON string for prompt
+        evidence_json = json.dumps(evidence_list, ensure_ascii=False, indent=2)
+        return evidence_json, provenance, raw_texts
 
     def _cache_key(self, task: PlanTask, passages: List[ContentPassage], stage_label: str) -> str:
         digest = hashlib.sha1()
@@ -400,45 +696,188 @@ class InformationExtractor:
         if not combined_text.strip():
             return None
 
-        core_entities = self._extract_core_entities(task.fact)
-        entities_str = ", ".join(core_entities) if core_entities else "N/A"
         lang = self._detect_language(task.fact + " " + combined_text[:500])
 
+        # Build structured extraction prompt
+        plan_tasks_json = json.dumps([{
+            "variable_name": task.variable_name,
+            "fact": task.fact,
+            "category": task.category
+        }], ensure_ascii=False)
+
         # Extract time context
-        time_info = ""
+        time_rules = ""
         if ctx and hasattr(ctx, 'time_context') and ctx.time_context:
             tc = ctx.time_context
             if tc.window and tc.window[0]:
-                target_date = tc.window[0].split('T')[0]  # Extract YYYY-MM-DD
+                target_date = tc.window[0].split('T')[0]
                 if lang == "zh":
-                    time_info = f"\n\n🔴 严格时间约束：目标日期为 {target_date}。\n- 只能提取标注为 {target_date} 或「昨天」、「昨日」的数据\n- 如果数据标注为「今天」、「当前」、「盘前」、「实时」，则不是 {target_date} 的数据，必须忽略\n- 如果看到多个价格数据，必须找出明确属于 {target_date} 的那个\n- 如果无法确定日期，返回 null 和低置信度"
+                    time_rules = f"\n\n时间规则：目标日期 = {target_date}。只接受明确标注此日期的数据，忽略「今天」、「当前」、「实时」标签。"
                 else:
-                    time_info = f"\n\n🔴 STRICT TIME CONSTRAINT: Target date is {target_date}.\n- Only extract data explicitly marked as {target_date} or 'yesterday'\n- If data is marked as 'today', 'current', 'pre-market', or 'real-time', it is NOT from {target_date} and must be ignored\n- If multiple prices exist, find the one explicitly for {target_date}\n- If date cannot be confirmed, return null with low confidence"
-
-        context_label = "这些搜索摘要" if lang == "zh" and mode == "snippet" else (
-            "这些文本段落" if lang == "zh" else "the search snippets" if mode == "snippet" else "the text passages"
-        )
+                    time_rules = f"\n\nTime Rule: Target date = {target_date}. Only accept data explicitly marked with this date. Ignore 'today', 'current', 'real-time' labels."
 
         if lang == "zh":
-            priority_note = "\n\n数据源优先级：\n1. 标注「成交」/「收盘」且来自券商数据的Answer Box\n2. 搜索摘要中明确标注日期的数据\n3. 网页正文\n4. 历史数据表格（需确认日期匹配）" if mode == "snippet" else "\n\n数据验证：提取的数据必须来自文本中明确提到的段落，并在 source_quote 中引用原文。"
-            prompt = (
-                f"请从{context_label}中提取以下信息，并确保仅依据提供的内容。{time_info}{priority_note}\n\n"
-                f"问题: {task.fact}\n变量名: {task.variable_name}\n类别: {task.category}\n核心实体: {entities_str}\n\n"
-                f"{context_label}:\n{combined_text}\n\n"
-                '输出 JSON：{"value": str|null, "confidence": 0-1, "reasoning": str, "source_quote": str}。\n'
-                '注意：reasoning 必须说明该数据来自哪个日期、哪个来源；source_quote 必须包含原文的日期标注。'
-            )
-            system_msg = "你是一个专业的信息提取专家，擅长时间敏感的数据提取。请仅返回有效 JSON，且完全依赖提供的文本。规则：1) 当看到「今天」、「当前」、「实时」等词时，这些数据不是目标日期的数据；2) 只提取明确标注了目标日期的数据；3) 如果有多个价格，必须找出日期匹配的那个；4) 不确定时返回 null。"
+            system_msg = """你是“结构化提取专家（严格模式）”。只从 EVIDENCE 中抽取 PLAN_TASKS 需要的事实；绝不外推或引入常识。严格对齐、就近取证、时间可验证。
+
+【范围/话题控制】
+- 仅处理 PLAN_TASKS 中的变量；与任务无关的事实一概忽略。
+- 若 EVIDENCE 含多实体，仅在“目标实体及其别名”就近范围内取值。
+
+【实体与时间的“三锚”规则】
+抽取任何“带时间的事实”（事件/奖项/任免/任期等）时，必须在同一来源文本的“同句/同行或±120字符”内，同时出现：
+1) 目标实体的明确提及（姓名/机构/别名之一）；
+2) 事件触发词（见下）或等价短语；
+3) 可规约的日期表达（YYYY[-MM[-DD]] 或“YYYY–YYYY”区间等）。
+三者任一缺失 → 该候选标注 `proximity_ok:false`；若无任何 `proximity_ok:true` 的候选 → `status:"unverified"`。
+
+【事件触发词词表（部分）】
+- 当选/当選/elected/reelected、任命/appointed、就任/assumed office/sworn in/inaugurated、代理/acting、续任/连任/reappointed、卸任/stepped down/retired/removed、任期开始/结束/term start/end、获授/授予/被评为/awarded/conferred、当选院士/fellow of…
+- 对头衔/职位变动，区分：获任命 vs 就职（实际开始） vs 卸任；不可混用。
+
+【日期与任期规约】
+- 仅接受与实体+事件触发词相邻近的日期；忽略页面元数据（“更新于/发布于/最后修改”）和“as of/截至/目前/现任”类“状态时间”。
+- 解析范围：精确日/月/年、季度（Q1–Q4→以季度首月规约）、中英文日期、中文数字日期、破折号区间（如 2015–2018、2015年1月–2017年3月）。
+- “至今/在任/现任/present”→ 仅在明确存在“任期开始”且实体匹配时，输出 open-ended 结束，值用字符串区间（如 "2019-03–present"），precision 取开始端精度；否则 `unverified`。
+- 不从“获奖年份 X”推断“任期开始/毕业年份”等任何未明示的时间。
+
+【表格/列表处理】
+- 表格中必须“同行/同列”绑定到目标实体行（或含其别名的单元格）；跨行跨列拼接禁止。无法确定 → `unverified`。
+
+【冲突与去歧义】
+- 同一变量若不同来源/同来源不同片段给出**不相同值**且均满足“三锚”→ `status:"conflict"`；在 candidates 中列出全部，注明距离与触发词。
+- 若值相同但精度不同，选择精度更高者为主值；保留另一个为候选。
+- 源优先级（仅作并列时的最后决策因子）：官方/主办方/法规 > 学校/研究所/协会 > 一线媒体/数据库 > 聚合器/百科/个人博客。
+
+【输出质量门槛（任一不满足则降级为 unverified）】
+- 缺少明确实体锚点；或实体锚点与日期/事件不在同域近邻（±120字符）；
+- 仅出现“被提名/拟任/传闻/预测/待审”；
+- 仅出现“在任/截至某日仍任”却无开始时间且 PLAN_TASKS 要求开始/结束；
+- 任期区间开始>结束或重叠/倒置；
+- 院士/fellow 未给出完整授予机构名。
+
+【集合/基数控制】
+- PLAN_TASKS 可为每个变量标记 cardinality: "SINGLE" | "LIST"（如缺省，按 SINGLE 处理）。
+- 当 cardinality="LIST"：返回按 items[] 组织的集合；每个 item 都必须满足“三锚近邻”（实体+事件触发词+日期）才计入。若无任何满足项 → status:"unverified"。
+- 可尊重 PLAN_TASKS 的限制：max_items、year_range、type_filter（如 {"type":["award","education"]}），用于控制数量与范围。
+
+【去重/归并与冲突】
+- 对 LIST：先对候选按（规范化名称 + 组织/院系 + 主日期/起止区间）聚类去重；同簇内日期一致且精度更高者为主值，其余入 candidates。
+- 同簇内若出现**不同值且均满足三锚** → 该簇标注 conflict:true，并在 notes 与 candidates 中展示；若存在 ≥1 个冲突簇 → 本变量 status:"conflict"；否则若 items 非空 → status:"ok"；否则 "unverified"。
+
+【候选记录要求（用于审核）】
+- 每个候选须给出：value、precision、source_id、url、proximity_ok、触发词（event_trigger）、实体命中（entity_mention）、日期原文（date_mention）、近邻距离（distance_chars）、引用片段（quote ≤ 200 字）。
+
+严格遵循以下 I/O 模板。除 JSON 外不得输出任何文字。
+"""
+            prompt = f"""INPUT
+PLAN_TASKS: {plan_tasks_json}
+EVIDENCE: {combined_text}{time_rules}
+
+OUTPUT JSON SCHEMA
+{
+  "results": [
+    {
+      "variable_name": "{task.variable_name}",
+      "status": "ok" | "unverified" | "conflict",
+      "value": "string|number|null",
+      "precision": "day"|"month"|"year"|null,
+      "source_ids": [1,2],
+      "candidates": [
+        {
+          "value":"...",
+          "precision":"day|month|year|null",
+          "source_id":1,
+          "url":"...",
+          "proximity_ok": true,
+          "event_trigger":"appointed|elected|term start|award|...",
+          "entity_mention":"原文中的实体提及",
+          "date_mention":"原文中的日期表达",
+          "distance_chars": 87,
+          "quote":"（含实体/触发词/日期的原文片段 ≤200字）"
+        }
+      ],
+      "notes": "简短原因（如：实体/事件/日期三锚齐备；或为何 unverified/conflict）"
+    }
+  ]
+}
+
+仅返回JSON，不要解释。"""
         else:
-            priority_note = "\n\nData Source Priority:\n1. Answer Box with 'closing'/'成交' label from broker data\n2. Search snippets with explicit date markers\n3. Web page content\n4. Historical tables (must confirm date match)" if mode == "snippet" else "\n\nData Validation: Extracted data must come from explicitly mentioned passages, with source_quote citing the original text."
-            prompt = (
-                f"Extract the requested fact strictly from {context_label}. No guessing.{time_info}{priority_note}\n\n"
-                f"QUESTION: {task.fact}\nVARIABLE: {task.variable_name}\nCATEGORY: {task.category}\nCORE ENTITIES: {entities_str}\n\n"
-                f"{context_label.upper()}:\n{combined_text}\n\n"
-                'Return valid JSON: {"value": str|null, "confidence": 0-1, "reasoning": str, "source_quote": str}.\n'
-                'Note: reasoning must specify which date and source; source_quote must include date markers from the original text.'
-            )
-            system_msg = "You are an expert in time-sensitive data extraction. Respond with JSON only using the supplied context. Rules: 1) When you see 'today', 'current', 'real-time', that data is NOT from the target date; 2) Only extract data explicitly marked with the target date; 3) If multiple prices exist, find the one matching the date; 4) Return null if uncertain."
+            system_msg = """You are a "Structured Extractor – Strict Mode". Extract ONLY the facts required by PLAN_TASKS from EVIDENCE. No world knowledge, no guessing.
+
+[Scope & Topic Control]
+- Only handle variables listed in PLAN_TASKS; ignore everything else.
+- If multiple entities appear, extract values ONLY within the local neighborhood of the target entity or its aliases.
+
+[Entity–Event–Date “Triple-Anchor” Rule]
+For any time-stamped fact (events/awards/appointments/tenure), in the SAME source text and within the SAME sentence/line or ±120 characters, you must find:
+1) an explicit mention of the target entity (name/alias/org),
+2) an event trigger (see list below) or equivalent phrase,
+3) a normalizable date expression (YYYY[-MM[-DD]] or a clear range).
+If any anchor is missing → mark that candidate `proximity_ok:false`. If NO candidate has `proximity_ok:true` → `status:"unverified"`.
+
+[Event Trigger Lexicon (partial)]
+elected/reelected, appointed, assumed office/sworn in/inaugurated, acting, reappointed, stepped down/retired/removed, term start/term end, awarded/conferred, fellow of …
+
+[Date & Tenure Normalization]
+- Accept dates ONLY near the entity + event trigger; ignore page meta dates (“updated on/published on/last modified”) and status-time phrases (“as of/currently”).
+- Parse day/month/year, quarters (Q1–Q4→map to first month), EN/CN dates, ranges (e.g., 2015–2018, Jan 2015–Mar 2017).
+- “present/current” is allowed only if a clear term start exists for the entity; encode as "YYYY[-MM[-DD]–present" with precision from the start; otherwise `unverified`.
+- Do NOT infer missing dates (e.g., do not derive start year from award year).
+
+[Tables/Lists]
+- In tables, bind values to the row/column of the target entity (or its alias cell). No cross-row/column stitching. If uncertain → `unverified`.
+
+[Conflicts & Disambiguation]
+- If TWO different values both satisfy the triple-anchor rule → `status:"conflict"` and list all in candidates with distance and trigger.
+- If values match but precisions differ → choose the higher precision as main value; keep the other as candidate.
+- Source priority (tie-breaker only): official/organizer/law > university/association > tier-1 media/databases > aggregators/wiki/blogs.
+
+[Quality Gates → downgrade to unverified if ANY holds]
+- Missing entity anchor; OR entity/date not near the event trigger (±120 chars);
+- Nomination/rumor/prediction/pending only;
+- “as of/currently” without a clear start date when start/end is required;
+- Term ranges reversed/overlapping;
+- “fellow/academician” without a full granting organization name.
+
+[Candidate Record (for audit)]
+Each candidate must include: value, precision, source_id, url, proximity_ok, event_trigger, entity_mention, date_mention, distance_chars, and a short quote (≤200 chars) containing the three anchors.
+
+Return STRICT JSON only. No extra text.
+"""
+            prompt = f"""INPUT
+PLAN_TASKS: {plan_tasks_json}
+EVIDENCE: {combined_text}{time_rules}
+
+OUTPUT JSON SCHEMA
+{
+  "results": [
+    {
+      "variable_name": "{task.variable_name}",
+      "status": "ok" | "unverified" | "conflict",
+      "value": "string|number|null",
+      "precision": "day"|"month"|"year"|null,
+      "source_ids": [1,2],
+      "candidates": [
+        {
+          "value":"...",
+          "precision":"day|month|year|null",
+          "source_id":1,
+          "url":"...",
+          "proximity_ok": true,
+          "event_trigger":"appointed|elected|term start|award|...",
+          "entity_mention":"exact mention in text",
+          "date_mention":"raw date string",
+          "distance_chars": 87,
+          "quote":"(≤200 chars snippet containing entity+trigger+date)"
+        }
+      ],
+      "notes": "short reason (e.g., triple-anchor satisfied; or why unverified/conflict)"
+    }
+  ]
+}
+
+Return JSON only, no explanation."""
 
         model_name = model_name or self.model_name
         max_tokens = max_tokens or cfg.get('models.extractor.max_tokens', 4000)
@@ -479,18 +918,50 @@ class InformationExtractor:
             print(f"[EXTRACTOR][DEBUG] Raw response: {result_text[:200]}")
             return self._fallback_extract(task, passages) if allow_fallback else None
 
+        # Parse new structured format
+        results = result_data.get("results", [])
+        if not results:
+            print(f"[EXTRACTOR][WARN] No results in structured response for {task.variable_name}")
+            return self._fallback_extract(task, passages) if allow_fallback else None
+        
+        result = results[0]  # Get first result (single task extraction)
+        status = result.get("status", "ok")
+        value = result.get("value")
+        notes = result.get("notes", "")
+        
+        # Calculate confidence based on status and candidates
+        if status == "ok":
+            confidence = 0.95
+        elif status == "unverified":
+            confidence = 0.60
+        elif status == "conflict":
+            confidence = 0.40
+        else:
+            confidence = 0.50
+        
+        # If multiple candidates, reduce confidence slightly
+        candidates = result.get("candidates", [])
+        if len(candidates) > 1:
+            confidence *= 0.9
+        
+        # Map source_ids to provenance URLs
+        source_ids = result.get("source_ids", [])
+        selected_provenance = [provenance[i-1] for i in source_ids if 1 <= i <= len(provenance)]
+        if not selected_provenance:
+            selected_provenance = provenance  # Fallback to all
+
         if cfg.is_decision_logging_enabled('ir_rag'):
             print(
-                f"[EXTRACTOR][DEBUG] {stage_label} {task.variable_name}: value={result_data.get('value')}"
-                f" confidence={result_data.get('confidence')}"
+                f"[EXTRACTOR][DEBUG] {stage_label} {task.variable_name}: value={value}"
+                f" confidence={confidence:.2f} status={status} notes={notes}"
             )
 
         return ExtractedVariable(
             variable_name=task.variable_name,
-            value=result_data.get("value"),
-            confidence=float(result_data.get("confidence", 0.0)),
-            provenance=provenance,
-            extraction_method=stage_label,
+            value=value,
+            confidence=confidence,
+            provenance=selected_provenance,
+            extraction_method=f"{stage_label}-structured",
             raw_passages=raw_texts
         )
 
