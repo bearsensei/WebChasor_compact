@@ -34,6 +34,7 @@ class QueryCategory(Enum):
     CREATIVE_GENERATION = "CREATIVE_GENERATION"
     MULTIMODAL_QUERY = "MULTIMODAL_QUERY"
     GEO_QUERY = "GEO_QUERY"
+    BAZI_QUERY = "BAZI_QUERY"
 
 @dataclass
 class RouterSignals:

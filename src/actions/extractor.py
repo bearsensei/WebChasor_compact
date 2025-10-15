@@ -50,7 +50,7 @@ class ExtractedVariable:
 
 class InformationExtractor:
     """Component for extracting structured information from passages"""
-    
+
     def __init__(self, llm_client=None, model_name: str = None):
         self.client = llm_client
         cfg = get_config()
@@ -65,6 +65,50 @@ class InformationExtractor:
         self.stage1_concurrency = cfg.get('ir_rag.extraction.stage1_concurrency', 5)
         self.stage2_concurrency = cfg.get('ir_rag.extraction.stage2_concurrency', 3)
         self._cache: Dict[str, ExtractedVariable] = {}
+
+    def _looks_structured(self, text: str) -> bool:
+        """Heuristic, format-agnostic detection of structure (markdown/html tables or explicit [TABLE]/[LIST])."""
+        if not text:
+            return False
+        t = text.lower()
+        # explicit structured markers or common table/list signals
+        return (
+            "[table]" in t or "[list]" in t or
+            "<table" in t or "&lt;table" in t or
+            "\n|" in text or "| " in text or
+            re.search(r'^\s*[-*]\s+\S', text, flags=re.MULTILINE) is not None
+        )
+
+    def _pick_body_text(self, passage: 'ContentPassage', meta: Dict[str, Any], mode: str) -> str:
+        """
+        Prefer structure-preserving text when available.
+        - If mode == 'snippet' and meta['snippet'] exists, use it (for SERP snippets).
+        - If mode == 'mixed': use raw_text if it has structure, else use snippet if available.
+        - Else prefer passage.raw_text (keeps tables/lists), fallback to passage.text.
+        """
+        if mode == "snippet" and meta.get('snippet') and passage.source_url == "SERP_SNIPPET":
+            return str(meta['snippet'])
+        
+        if mode == "mixed":
+            # For mixed mode: prioritize structured content from raw_text
+            raw = passage.raw_text or ""
+            if raw and self._looks_structured(raw):
+                return raw
+            # Fallback to snippet for SERP results, or text for others
+            if passage.source_url == "SERP_SNIPPET" and meta.get('snippet'):
+                return str(meta['snippet'])
+            return raw or passage.text or ""
+        
+        return passage.raw_text or passage.text or ""
+
+    def _summarize_for_cache(self, s: str) -> str:
+        """Stable short fingerprint source for cache/dedupe (avoid huge keys)."""
+        if not s:
+            return ""
+        s = s.strip()
+        if len(s) <= 200:
+            return s
+        return s[:100] + s[-100:]
     
     async def extract_variables(
         self,
@@ -171,7 +215,7 @@ class InformationExtractor:
         """
         if not tasks or not self.client:
             return None
-        
+
         # Step 1: Merge and deduplicate passages from all tasks
         all_passages_dict = {}
         for task in tasks:
@@ -181,33 +225,43 @@ class InformationExtractor:
                 key = f"{p.source_url}::{p.text[:100]}"  # Include text prefix for better deduplication
                 if key not in all_passages_dict or p.score > all_passages_dict[key].score:
                     all_passages_dict[key] = p
-        
+
         # Step 2: Filter to snippets only and sort by score
         snippet_passages = [
-            p for p in all_passages_dict.values() 
+            p for p in all_passages_dict.values()
             if p.source_url == "SERP_SNIPPET"
         ]
         snippet_passages.sort(key=lambda p: p.score, reverse=True)
-        
+
         # Step 3: Limit to top snippets to avoid token overflow
         top_snippets = snippet_passages[:15]  # Top 15 most relevant snippets
-        
-        if not top_snippets:
-            print(f"[EXTRACTOR][Stage1-Batch] No snippets available for batch extraction")
+
+        # Optionally add a couple of structure-rich passages (tables/lists) to help roster/list tasks.
+        struct_candidates = [
+            p for p in all_passages_dict.values()
+            if p.source_url != "SERP_SNIPPET" and self._looks_structured(p.raw_text or p.text)
+        ]
+        struct_candidates.sort(key=lambda p: p.score, reverse=True)
+        top_struct = struct_candidates[:2]
+
+        shared_inputs = top_snippets + top_struct
+
+        if not shared_inputs:
+            print(f"[EXTRACTOR][Stage1-Batch] No passages available for batch extraction")
             return None
-        
-        print(f"[EXTRACTOR][Stage1-Batch] Extracting {len(tasks)} tasks from {len(top_snippets)} shared snippets")
-        
+
+        print(f"[EXTRACTOR][Stage1-Batch] Extracting {len(tasks)} tasks from {len(shared_inputs)} shared passages (snippets + structured)")
+
         # Step 4: Batch extract all tasks
-        batch_results = await self._batch_extract(tasks, top_snippets, ctx, stage="stage1")
-        
+        batch_results = await self._batch_extract(tasks, shared_inputs, ctx, stage="stage1")
+
         # Step 5: Map results back to (task, passages, result) format
         results = []
         for task in tasks:
             passages = ranked_passages.get(task.variable_name, [])
             result = batch_results.get(task.variable_name)
             results.append((task, passages, result))
-        
+
         return results
     
     async def _run_stage1_individual(
@@ -276,7 +330,9 @@ class InformationExtractor:
         cfg = get_config()
         
         # Step 1: Format passages as structured EVIDENCE
-        combined_text, provenance, raw_texts = self._format_passages(passages, mode="snippet")
+        # Use mixed mode: prefer raw_text for structured content, snippet for SERP snippets
+        mode = "mixed"  # Allow _pick_body_text to intelligently choose
+        combined_text, provenance, raw_texts = self._format_passages(passages, mode=mode)
         
         if not combined_text.strip():
             return {}
@@ -316,13 +372,31 @@ class InformationExtractor:
 - 如果多个tasks语义重复（如achievements和notable_facts），合并到一个task中，其他返回null
 - 如果某task没有信息，返回"status":"unverified", "value":null
 
-时间信息提取规则（重要）：
-- 任何职位、奖项、事件、成就都必须提取年份
+列表/名单/表格提取规则（关键）：
+- 当task要求提取名单、列表、成员、领导人、官员时，必须提取所有名字，不要仅总结
+- 寻找模式："XXX局长：YYY"、"XXX: YYY (年份)"、表格格式[TABLE]...[/TABLE]
+- 如果看到[TABLE]标记，提取**所有行**的数据
+- **年份是可选的**：如果表格/文本中有年份就附带，没有年份也照样提取姓名+职位
+- 格式化为结构化列表：
+  * 有年份："职位1：姓名1（2022年7月）; 职位2：姓名2（2020年）; ..."
+  * 无年份："职位1：姓名1; 职位2：姓名2; ..."
+  * 混合："职位1：姓名1（2022年）; 职位2：姓名2; 职位3：姓名3（2023年）; ..."
+- 示例：
+  ✅ 正确："政務司司長：陳國基（2022年7月）; 財政司司長：陳茂波（2017年1月）; 律政司司長：林定國（2022年7月）"
+  ✅ 正确："公務員事務局：楊何蓓茵; 政制及內地事務局：曾國衞; 文化體育及旅遊局：羅淑佩"（没有年份也可以）
+  ❌ 错误："有三位司長"（缺少具体名字）
+  ❌ 错误："包括政務司、財政司、律政司"（只有职位，缺少人名）
+- 即使文本很长，也要提取所有提到的名字，不要遗漏
+- **重要**：即使任务名包含 "with_years"，也要提取没有年份的条目
+
+时间信息提取规则（仅适用于非列表类任务）：
+- 对于单一事件/奖项/成就（非列表），尽量提取年份
 - 年份必须与事件明确关联（同句或邻近±120字符）
 - 忽略页面元数据日期（"更新于"、"发布于"）
 - 职业/奖项格式："Position (YYYY)" 或 "Position, started YYYY"
 - 如果找不到年份但事实存在，value正常填写，notes中说明"年份未找到"
 - 区分事件类型：当选/任命/就职/卸任/获奖，每个都要标注年份
+- **注意**：对于列表/名单类任务，年份是可选的（见上方列表提取规则）
 """
             prompt = f"""INPUT
 PLAN_TASKS: {plan_tasks_json}
@@ -358,13 +432,31 @@ Batch extraction rules:
 - If multiple tasks are semantically duplicate (e.g. achievements and notable_facts), merge into one task, return null for others
 - If no information for a task, return "status":"unverified", "value":null
 
-Temporal Information Extraction Rules (CRITICAL):
-- ANY position, award, event, or achievement MUST include the year
+List/Roster/Table Extraction Rules (CRITICAL):
+- When task asks for lists, rosters, members, leaders, officials: extract ALL names, do NOT just summarize
+- Look for patterns: "XXX Chief: YYY", "XXX: YYY (Year)", table formats [TABLE]...[/TABLE]
+- If you see [TABLE] markers, extract **ALL rows** of data
+- **Year is OPTIONAL**: If table/text has year info, include it; if no year, still extract name+position
+- Format as structured list:
+  * With year: "Position1: Name1 (July 2022); Position2: Name2 (2020); ..."
+  * Without year: "Position1: Name1; Position2: Name2; ..."
+  * Mixed: "Position1: Name1 (2022); Position2: Name2; Position3: Name3 (2023); ..."
+- Examples:
+  ✅ GOOD: "Chief Secretary: Chan Kwok-ki (July 2022); Financial Secretary: Paul Chan (Jan 2017); Secretary for Justice: Paul Lam (July 2022)"
+  ✅ GOOD: "Civil Service Bureau: Ada Chung; Constitutional Affairs Bureau: Erick Tsang; Culture Bureau: Rosanna Law" (no year is OK)
+  ❌ BAD: "There are three secretaries" (missing actual names)
+  ❌ BAD: "Including Chief Secretary, Financial Secretary, and Secretary for Justice" (titles only, missing names)
+- Even if text is long, extract ALL mentioned names, do not omit any
+- **IMPORTANT**: Even if task name contains "with_years", extract entries WITHOUT year too
+
+Temporal Information Extraction Rules (for non-list tasks only):
+- For single events/awards/achievements (non-list), try to extract year
 - Year must be explicitly linked to the event (same sentence or within ±120 chars)
 - Ignore page meta dates ("updated on", "published on", "last modified")
 - Format for positions/awards: "Position (YYYY)" or "Position, started YYYY"
 - If year not found but fact exists, fill value normally and note "year not found" in notes
 - Distinguish event types: elected/appointed/assumed/resigned/awarded, each with year
+- **Note**: For list/roster tasks, year is OPTIONAL (see list extraction rules above)
 """
             prompt = f"""INPUT
 PLAN_TASKS: {plan_tasks_json}
@@ -454,6 +546,21 @@ Requirements:
             else:
                 confidence = 0.50
             
+            # 🔥 FALLBACK: If extraction failed, use raw material
+            extraction_method = f"batch-{stage}"
+            if (not value or confidence < 0.7) and raw_texts:
+                # Find the corresponding task for better context
+                task_obj = next((t for t in tasks if t.variable_name == var_name), None)
+                if task_obj:
+                    raw_material = self._extract_relevant_raw_material(raw_texts, task_obj)
+                    if raw_material and len(raw_material) > 50:
+                        value = raw_material
+                        confidence = 0.65
+                        status = "raw_fallback"
+                        notes = f"批量提取失败，返回原始材料。原因：{notes}"
+                        extraction_method = "batch-raw-fallback"
+                        print(f"[EXTRACTOR][BATCH-FALLBACK] {var_name}: using raw material ({len(raw_material)} chars)")
+            
             # Map source_ids to provenance URLs
             source_ids = result.get("source_ids", [])
             selected_provenance = [provenance[i-1] for i in source_ids if 1 <= i <= len(provenance)]
@@ -465,13 +572,14 @@ Requirements:
                 value=value,
                 confidence=confidence,
                 provenance=selected_provenance,
-                extraction_method=f"batch-{stage}",
+                extraction_method=extraction_method,
                 raw_passages=raw_texts[:3]  # Include sample passages
             )
             
             if cfg.is_decision_logging_enabled('ir_rag'):
+                value_preview = str(value)[:50] if value else 'None'
                 print(
-                    f"[EXTRACTOR][BATCH] {var_name}: value={str(value)[:50]}... "
+                    f"[EXTRACTOR][BATCH] {var_name}: value={value_preview}... "
                     f"confidence={confidence:.2f} status={status}"
                 )
         
@@ -499,10 +607,10 @@ Requirements:
         stage2_outputs = await asyncio.gather(*tasks)
 
         elapsed = time.perf_counter() - stage2_start
-        solved = sum(1 for _, result in stage2_outputs if result and result.confidence >= 0.7)
+        solved = sum(1 for _, result in stage2_outputs if result and result.confidence >= 0.6)
         print(
             f"[EXTRACTOR][Stage2] Completed {len(stage2_outputs)} tasks in {elapsed:.2f}s "
-            f"(confidence ≥0.7: {solved}, concurrent)"
+            f"(confidence ≥0.6: {solved}, concurrent)"
         )
 
         return stage2_outputs
@@ -565,11 +673,12 @@ Requirements:
             need = self.stage2_chunk_limit - len(selected)
             selected.extend(secondary[:need])
 
-        # Deduplicate by text to avoid redundant context
+        # Deduplicate by structure-preserving text (prefer raw_text), compact
         seen_text = set()
         unique_passages = []
         for passage in selected:
-            text_key = passage.text.strip()[:200]
+            base = passage.raw_text or passage.text or ""
+            text_key = self._summarize_for_cache(base)
             if text_key in seen_text:
                 continue
             seen_text.add(text_key)
@@ -588,26 +697,31 @@ Requirements:
             title = meta.get('title') or meta.get('page_title') or ""
             provenance_id = meta.get('provenance', passage.source_url)
             snippet_date = meta.get('snippet_date')
-            
-            if mode == "snippet" and meta.get('snippet'):
-                body_text = meta['snippet']
-            else:
-                body_text = passage.text
+
+            body_text = self._pick_body_text(passage, meta, mode)
 
             raw_texts.append(body_text)
             provenance.append(provenance_id)
 
-            # Structured format
+            is_structured = self._looks_structured(body_text)
+
+            # Keep body moderately bounded but preserve multi-line tables/lists
+            # For structured content (tables), allow up to 5000 chars to avoid truncating large rosters
+            if is_structured:
+                snippet_body = body_text[:5000] if len(body_text) > 5000 else body_text
+            else:
+                snippet_body = body_text[:1000] if len(body_text) > 1000 else body_text
             evidence_item = {
                 "id": idx,
                 "url": provenance_id,
                 "title": title,
-                "snippet": body_text[:500] if len(body_text) > 500 else body_text,  # Limit length
-                "type": "snippet" if passage.source_url == "SERP_SNIPPET" else "webpage"
+                "snippet": snippet_body,
+                "type": "snippet" if passage.source_url == "SERP_SNIPPET" else "webpage",
+                "format": "structured" if is_structured else "plain"
             }
             if snippet_date:
                 evidence_item["date"] = snippet_date
-            
+
             evidence_list.append(evidence_item)
 
         # Format as JSON string for prompt
@@ -619,7 +733,8 @@ Requirements:
         digest.update(task.variable_name.encode('utf-8'))
         digest.update(stage_label.encode('utf-8'))
         for passage in passages:
-            digest.update(passage.text[:200].encode('utf-8', errors='ignore'))
+            base = passage.raw_text or passage.text or ""
+            digest.update(self._summarize_for_cache(base).encode('utf-8', errors='ignore'))
         return digest.hexdigest()
 
     async def _extract_single_variable(self, task: PlanTask, passages: List[ContentPassage]) -> ExtractedVariable:
@@ -643,6 +758,274 @@ Requirements:
         if total_chars == 0:
             return "en"
         return "zh" if chinese_chars / total_chars > 0.3 else "en"
+    
+    def _is_list_task(self, task: PlanTask) -> bool:
+        """Check if task requires list/roster extraction"""
+        var_name_lower = task.variable_name.lower()
+        fact_lower = task.fact.lower()
+        
+        # Keywords that indicate list extraction
+        list_keywords = [
+            'list', 'roster', 'chiefs', 'heads', 'members', 'leaders', 
+            'names', 'officials', 'ministers', 'secretaries', 'directors',
+            '名单', '局长', '司长', '成员', '领导', '官员', '部长'
+        ]
+        
+        # Check variable name and fact
+        for keyword in list_keywords:
+            if keyword in var_name_lower or keyword in fact_lower:
+                return True
+        
+        # Check category
+        if task.category == "aggregation":
+            # Additional check: fact asks for multiple entities
+            if any(word in fact_lower for word in ['all', 'each', '所有', '各', '每个', 'who are']):
+                return True
+        
+        return False
+    
+    def _direct_table_extract(self, task: PlanTask, passages: List[ContentPassage]) -> Optional[ExtractedVariable]:
+        """
+        Directly parse tables from passages for list/roster tasks.
+        Bypass LLM to avoid uncertainty and conservative behavior.
+        """
+        all_entries = []
+        provenance_urls = []
+        
+        for passage in passages:
+            # Get raw text (which should contain [TABLE] markers)
+            text = passage.raw_text or passage.text or ""
+            
+            if not text or '[TABLE]' not in text:
+                continue
+            
+            # Extract table blocks
+            table_blocks = re.findall(r'\[TABLE\](.*?)\[/TABLE\]', text, re.DOTALL)
+            
+            for table_text in table_blocks:
+                entries = self._parse_table_block(table_text)
+                if entries:
+                    all_entries.extend(entries)
+                    url = (passage.metadata or {}).get('provenance', passage.source_url)
+                    if url not in provenance_urls:
+                        provenance_urls.append(url)
+        
+        if not all_entries:
+            print(f"[EXTRACTOR][DIRECT] No table entries found for {task.variable_name}")
+            return None
+        
+        # Format entries as semicolon-separated list
+        value = "; ".join(all_entries)
+        
+        # Calculate confidence based on number of entries
+        if len(all_entries) >= 10:
+            confidence = 0.95
+        elif len(all_entries) >= 5:
+            confidence = 0.90
+        elif len(all_entries) >= 3:
+            confidence = 0.85
+        else:
+            confidence = 0.75
+        
+        print(f"[EXTRACTOR][DIRECT] Extracted {len(all_entries)} entries from tables")
+        
+        return ExtractedVariable(
+            variable_name=task.variable_name,
+            value=value,
+            confidence=confidence,
+            provenance=provenance_urls,
+            extraction_method="direct-table-parse",
+            raw_passages=[text[:500] for text in [p.raw_text or p.text for p in passages if p.raw_text or p.text]]
+        )
+    
+    def _parse_table_block(self, table_text: str) -> List[str]:
+        """
+        Parse a table block into list of entries.
+        Expected format: "局名 | 局长姓名 | 副局长 | 政治助理"
+        Returns: ["局名：局长姓名（年份）", ...] or ["局名：局长姓名", ...] if no year
+        
+        Flexible extraction: year is optional, extract entries even without year info.
+        """
+        entries = []
+        lines = table_text.strip().split('\n')
+        
+        if not lines:
+            return entries
+        
+        # Skip title/caption lines
+        data_lines = []
+        for line in lines:
+            line = line.strip()
+            if not line or line.startswith('表格标题:') or line.startswith('---') or line == '------------':
+                continue
+            if '|' in line:
+                data_lines.append(line)
+        
+        if not data_lines:
+            return entries
+        
+        # First line might be header
+        header_line = data_lines[0]
+        headers = [h.strip() for h in header_line.split('|')]
+        
+        # Check if first line is header (contains generic terms)
+        header_keywords = ['姓名', 'name', '职位', 'position', 'title', '年份', 'year', 'since', '局', 'bureau', 'department', 'from', 'appointed']
+        is_header = any(any(kw in h.lower() for kw in header_keywords) for h in headers)
+        
+        start_idx = 1 if is_header else 0
+        
+        # Parse data rows
+        for line in data_lines[start_idx:]:
+            cells = [c.strip() for c in line.split('|')]
+            
+            if len(cells) < 2:
+                continue
+            
+            # First cell is usually position/bureau, second is name
+            position = cells[0]
+            name = cells[1]
+            
+            # Skip if name is "不適用", "待定", empty, or generic placeholders
+            skip_values = ['不適用', '不适用', 'N/A', '待定', 'TBD', 'TBA', '-', '']
+            if not name or name in skip_values:
+                continue
+            
+            # Also skip if name looks like a section header (all Chinese chars but very generic)
+            if name in ['姓名', '局长', '司长', 'Name', 'Chief', 'Secretary']:
+                continue
+            
+            # Try to find year/date in ALL cells (not just cells[2:])
+            year = None
+            date_info = None
+            
+            # Strategy 1: Look for 4-digit year (YYYY)
+            for cell in cells:
+                year_match = re.search(r'(20\d{2})', cell)
+                if year_match:
+                    year = year_match.group(1)
+                    # Also try to find month
+                    month_match = re.search(r'(20\d{2})[年-](\d{1,2})', cell)
+                    if month_match:
+                        date_info = f"{month_match.group(1)}年{month_match.group(2)}月"
+                    else:
+                        date_info = f"{year}年"
+                    break
+            
+            # Strategy 2: Look for Chinese date patterns (like "2022年7月")
+            if not date_info:
+                for cell in cells:
+                    cn_date_match = re.search(r'(20\d{2})年(\d{1,2})月', cell)
+                    if cn_date_match:
+                        date_info = f"{cn_date_match.group(1)}年{cn_date_match.group(2)}月"
+                        break
+            
+            # Format entry based on available information
+            # Priority: name + position (always) + date (if available)
+            if date_info:
+                entry = f"{position}：{name}（{date_info}）"
+            elif year:
+                entry = f"{position}：{name}（{year}年）"
+            else:
+                # No year info available, still extract name + position
+                entry = f"{position}：{name}"
+            
+            entries.append(entry)
+        
+        return entries
+    
+    def _extract_relevant_raw_material(self, raw_texts: List[str], task: PlanTask) -> str:
+        """
+        Extract relevant raw material from passages when LLM extraction fails.
+        Intelligently selects and formats the most relevant parts.
+        """
+        if not raw_texts:
+            return ""
+        
+        # Extract keywords from task for relevance matching
+        task_keywords = set()
+        
+        # From variable name (split by underscore)
+        var_parts = task.variable_name.lower().replace('_', ' ').split()
+        task_keywords.update([p for p in var_parts if len(p) > 3])
+        
+        # From fact (extract meaningful words)
+        fact_words = re.findall(r'\b[\u4e00-\u9fff]{2,}|\b[a-zA-Z]{4,}\b', task.fact.lower())
+        task_keywords.update(fact_words[:10])  # Limit to avoid too many
+        
+        # Score each raw text by keyword relevance
+        scored_texts = []
+        for text in raw_texts:
+            if not text or len(text.strip()) < 50:
+                continue
+            
+            text_lower = text.lower()
+            score = 0
+            
+            # Count keyword matches
+            for keyword in task_keywords:
+                if keyword in text_lower:
+                    score += 1
+            
+            # Bonus for structured content (tables/lists)
+            if '[TABLE]' in text:
+                score += 5
+            if re.search(r'^\s*[-•*]\s', text, re.MULTILINE):
+                score += 2
+            
+            scored_texts.append((score, text))
+        
+        if not scored_texts:
+            # No scoring worked, just use first non-empty text
+            for text in raw_texts:
+                if text and len(text.strip()) > 50:
+                    return self._format_raw_material(text[:1500])
+            return ""
+        
+        # Sort by score (highest first) and take top passages
+        scored_texts.sort(key=lambda x: x[0], reverse=True)
+        
+        # Combine top 2-3 passages
+        selected = []
+        total_chars = 0
+        max_chars = 2000  # Limit total length
+        
+        for score, text in scored_texts[:3]:
+            if score == 0:
+                break  # No more relevant texts
+            
+            if total_chars + len(text) > max_chars:
+                remaining = max_chars - total_chars
+                if remaining > 200:  # Only add if there's meaningful space left
+                    selected.append(text[:remaining] + "...")
+                break
+            
+            selected.append(text)
+            total_chars += len(text)
+        
+        if not selected:
+            # Fallback: use first passage
+            return self._format_raw_material(raw_texts[0][:1500])
+        
+        # Combine and format
+        combined = "\n\n---\n\n".join(selected)
+        return self._format_raw_material(combined)
+    
+    def _format_raw_material(self, text: str) -> str:
+        """
+        Format raw material for better readability.
+        Add a prefix to indicate it's raw content.
+        """
+        if not text:
+            return ""
+        
+        # Clean up excessive whitespace
+        text = re.sub(r'\n{3,}', '\n\n', text)
+        text = re.sub(r' {2,}', ' ', text)
+        
+        # Add indicator prefix
+        formatted = f"[原始材料]\n{text.strip()}"
+        
+        return formatted
     
     def _extract_core_entities(self, question: str) -> List[str]:
         """
@@ -691,6 +1074,16 @@ Requirements:
             return self._fallback_extract(task, passages) if allow_fallback else None
 
         cfg = get_config()
+        
+        # 🔥 DIRECT TABLE PARSING for list/roster tasks (bypass LLM uncertainty)
+        if self._is_list_task(task):
+            direct_result = self._direct_table_extract(task, passages)
+            if direct_result and direct_result.value and direct_result.confidence >= 0.7:
+                print(f"[EXTRACTOR][DIRECT] Successfully extracted {task.variable_name} via table parsing (confidence={direct_result.confidence:.2f})")
+                return direct_result
+            else:
+                print(f"[EXTRACTOR][DIRECT] Table parsing failed or low confidence, falling back to LLM")
+        
         combined_text, provenance, raw_texts = self._format_passages(passages, mode)
 
         if not combined_text.strip():
@@ -721,10 +1114,14 @@ Requirements:
 
 【范围/话题控制】
 - 仅处理 PLAN_TASKS 中的变量；与任务无关的事实一概忽略。
-- 若 EVIDENCE 含多实体，仅在“目标实体及其别名”就近范围内取值。
+- 若 EVIDENCE 含多实体，仅在"目标实体及其别名"就近范围内取值。
 
-【实体与时间的“三锚”规则】
-抽取任何“带时间的事实”（事件/奖项/任免/任期等）时，必须在同一来源文本的“同句/同行或±120字符”内，同时出现：
+【提取模式选择 - 优先级规则】
+**首先检查是否为"列表提取模式"（见下方专门规则）。如果是，跳过"三锚规则"，直接使用表格/列表提取逻辑。**
+**只有非列表类任务才需要严格遵循"三锚规则"。**
+
+【实体与时间的"三锚"规则】（仅适用于非列表类任务）
+抽取任何"带时间的事实"（事件/奖项/任免/任期等）时，必须在同一来源文本的"同句/同行或±120字符"内，同时出现：
 1) 目标实体的明确提及（姓名/机构/别名之一）；
 2) 事件触发词（见下）或等价短语；
 3) 可规约的日期表达（YYYY[-MM[-DD]] 或“YYYY–YYYY”区间等）。
@@ -740,8 +1137,39 @@ Requirements:
 - “至今/在任/现任/present”→ 仅在明确存在“任期开始”且实体匹配时，输出 open-ended 结束，值用字符串区间（如 "2019-03–present"），precision 取开始端精度；否则 `unverified`。
 - 不从“获奖年份 X”推断“任期开始/毕业年份”等任何未明示的时间。
 
-【表格/列表处理】
-- 表格中必须“同行/同列”绑定到目标实体行（或含其别名的单元格）；跨行跨列拼接禁止。无法确定 → `unverified`。
+【🔥 列表提取模式 - 优先规则（覆盖三锚规则）🔥】
+**触发条件**：variable_name 包含 "list/roster/chiefs/heads/members/leaders/names"，或 category="aggregation" 且要求多个实体
+
+**一旦触发列表提取模式，完全忽略"三锚规则"和"事件触发词"要求，改用以下简化规则：**
+
+1. **[TABLE]...[/TABLE] 表格提取**：
+   - 识别列头：姓名/Name、职位/Position/Title、年份/Year/Since/From/Appointed
+   - 提取表格中**所有行**的数据：
+     * **必需**：姓名 + 职位（同一行内）
+     * **可选**：年份（如果表格列有年份就提取，没有就不提取）
+     * ⚠️ **即使任务名是 "with_years"，也要提取没有年份的条目**
+   - ⚠️ 不需要"事件触发词"（表格本身就是事实陈述）
+   - ⚠️ 不需要验证"±120字符"规则
+   - 格式化输出：
+     * 有年份："职位1：姓名1（2022年7月）; 职位2：姓名2（2020年）; ..."
+     * 无年份："职位1：姓名1; 职位2：姓名2; ..."
+     * 混合情况："职位1：姓名1（2022年）; 职位2：姓名2; 职位3：姓名3（2023年）; ..."
+
+2. **文本列表提取**（如"局长：XXX（2022年）"）：
+   - 识别模式："职位[：:] 姓名 [可选：(年份)]"
+   - 提取所有匹配的名字
+
+3. **输出要求**：
+   - ✅ 正确示例："公務員事務局長：楊何蓓茵; 政制及內地事務局長：曾國衞（2022年7月）; 文化體育及旅遊局長：羅淑佩; ..."
+   - ❌ 错误示例："有15个局长"（禁止总结，必须列出所有名字）
+   - ❌ 错误示例："包括多个决策局"（必须给出具体名单）
+
+4. **Confidence 评分**（放宽标准）：
+   - 找到 ≥3 个实体 → status:"ok", confidence=0.9
+   - 找到 1-2 个 → status:"ok", confidence=0.7
+   - 一个都没找到 → status:"unverified", confidence=0.6
+
+**关键**：列表模式下，即使缺少年份或事件触发词，只要有姓名+职位，就应该提取并返回 status:"ok"。
 
 【冲突与去歧义】
 - 同一变量若不同来源/同来源不同片段给出**不相同值**且均满足“三锚”→ `status:"conflict"`；在 candidates 中列出全部，注明距离与触发词。
@@ -774,16 +1202,16 @@ PLAN_TASKS: {plan_tasks_json}
 EVIDENCE: {combined_text}{time_rules}
 
 OUTPUT JSON SCHEMA
-{
+{{
   "results": [
-    {
+    {{
       "variable_name": "{task.variable_name}",
       "status": "ok" | "unverified" | "conflict",
       "value": "string|number|null",
       "precision": "day"|"month"|"year"|null,
       "source_ids": [1,2],
       "candidates": [
-        {
+        {{
           "value":"...",
           "precision":"day|month|year|null",
           "source_id":1,
@@ -794,12 +1222,12 @@ OUTPUT JSON SCHEMA
           "date_mention":"原文中的日期表达",
           "distance_chars": 87,
           "quote":"（含实体/触发词/日期的原文片段 ≤200字）"
-        }
+        }}
       ],
       "notes": "简短原因（如：实体/事件/日期三锚齐备；或为何 unverified/conflict）"
-    }
+    }}
   ]
-}
+}}
 
 仅返回JSON，不要解释。"""
         else:
@@ -809,7 +1237,11 @@ OUTPUT JSON SCHEMA
 - Only handle variables listed in PLAN_TASKS; ignore everything else.
 - If multiple entities appear, extract values ONLY within the local neighborhood of the target entity or its aliases.
 
-[Entity–Event–Date “Triple-Anchor” Rule]
+[Extraction Mode Selection - Priority Rule]
+**First check if this is "List Extraction Mode" (see dedicated rules below). If yes, SKIP the "Triple-Anchor Rule" and use table/list extraction logic directly.**
+**Only non-list tasks need to strictly follow the "Triple-Anchor Rule".**
+
+[Entity–Event–Date "Triple-Anchor" Rule] (only for non-list tasks)
 For any time-stamped fact (events/awards/appointments/tenure), in the SAME source text and within the SAME sentence/line or ±120 characters, you must find:
 1) an explicit mention of the target entity (name/alias/org),
 2) an event trigger (see list below) or equivalent phrase,
@@ -825,8 +1257,39 @@ elected/reelected, appointed, assumed office/sworn in/inaugurated, acting, reapp
 - “present/current” is allowed only if a clear term start exists for the entity; encode as "YYYY[-MM[-DD]–present" with precision from the start; otherwise `unverified`.
 - Do NOT infer missing dates (e.g., do not derive start year from award year).
 
-[Tables/Lists]
-- In tables, bind values to the row/column of the target entity (or its alias cell). No cross-row/column stitching. If uncertain → `unverified`.
+[🔥 List Extraction Mode - Priority Rule (Overrides Triple-Anchor) 🔥]
+**Trigger**: variable_name contains "list/roster/chiefs/heads/members/leaders/names", OR category="aggregation" requiring multiple entities
+
+**Once List Extraction Mode is triggered, COMPLETELY IGNORE "Triple-Anchor Rule" and "event trigger" requirements. Use these simplified rules instead:**
+
+1. **[TABLE]...[/TABLE] Table Extraction**:
+   - Identify headers: Name, Position/Title, Year/Since/From/Appointed
+   - Extract **ALL rows** from table:
+     * **Required**: name + position (in same row)
+     * **Optional**: year (extract if column exists, skip if not available)
+     * ⚠️ **Even if task name is "with_years", extract entries WITHOUT year too**
+   - ⚠️ NO "event trigger" required (table itself is factual statement)
+   - ⚠️ NO "±120 chars" proximity validation needed
+   - Format output:
+     * With year: "Position1: Name1 (July 2022); Position2: Name2 (2020); ..."
+     * Without year: "Position1: Name1; Position2: Name2; ..."
+     * Mixed: "Position1: Name1 (2022); Position2: Name2; Position3: Name3 (2023); ..."
+
+2. **Text List Extraction** (e.g., "Chief: John Doe (2022)"):
+   - Recognize pattern: "position[: ] name [optional: (year)]"
+   - Extract all matching names
+
+3. **Output Requirements**:
+   - ✅ GOOD: "Secretary for the Civil Service: Ada Chung; Secretary for Constitutional and Mainland Affairs: Erick Tsang (July 2022); ..."
+   - ❌ BAD: "There are 15 bureau chiefs" (no summarizing, must list all names)
+   - ❌ BAD: "Multiple policy bureaus" (must provide specific roster)
+
+4. **Confidence Scoring** (relaxed standards):
+   - Found ≥3 entities → status:"ok", confidence=0.9
+   - Found 1-2 entities → status:"ok", confidence=0.7
+   - Found none → status:"unverified", confidence=0.6
+
+**Critical**: In list mode, even without year or event trigger, if name+position exists, extract it and return status:"ok".
 
 [Conflicts & Disambiguation]
 - If TWO different values both satisfy the triple-anchor rule → `status:"conflict"` and list all in candidates with distance and trigger.
@@ -850,16 +1313,16 @@ PLAN_TASKS: {plan_tasks_json}
 EVIDENCE: {combined_text}{time_rules}
 
 OUTPUT JSON SCHEMA
-{
+{{
   "results": [
-    {
+    {{
       "variable_name": "{task.variable_name}",
       "status": "ok" | "unverified" | "conflict",
       "value": "string|number|null",
       "precision": "day"|"month"|"year"|null,
       "source_ids": [1,2],
       "candidates": [
-        {
+        {{
           "value":"...",
           "precision":"day|month|year|null",
           "source_id":1,
@@ -870,12 +1333,12 @@ OUTPUT JSON SCHEMA
           "date_mention":"raw date string",
           "distance_chars": 87,
           "quote":"(≤200 chars snippet containing entity+trigger+date)"
-        }
+        }}
       ],
       "notes": "short reason (e.g., triple-anchor satisfied; or why unverified/conflict)"
-    }
+    }}
   ]
-}
+}}
 
 Return JSON only, no explanation."""
 
@@ -944,6 +1407,18 @@ Return JSON only, no explanation."""
         if len(candidates) > 1:
             confidence *= 0.9
         
+        # 🔥 FALLBACK: If extraction failed (None or low confidence), use raw material
+        if (not value or confidence < 0.7) and raw_texts:
+            print(f"[EXTRACTOR][FALLBACK] Extraction failed for {task.variable_name}, using raw material")
+            # Combine relevant raw texts (limited to avoid huge responses)
+            raw_material = self._extract_relevant_raw_material(raw_texts, task)
+            if raw_material and len(raw_material) > 50:  # At least some meaningful content
+                value = raw_material
+                confidence = 0.65  # Low but not too low
+                status = "raw_fallback"
+                notes = f"LLM提取失败，返回原始材料段落。原因：{notes}"
+                print(f"[EXTRACTOR][FALLBACK] Using {len(raw_material)} chars of raw material")
+        
         # Map source_ids to provenance URLs
         source_ids = result.get("source_ids", [])
         selected_provenance = [provenance[i-1] for i in source_ids if 1 <= i <= len(provenance)]
@@ -952,8 +1427,8 @@ Return JSON only, no explanation."""
 
         if cfg.is_decision_logging_enabled('ir_rag'):
             print(
-                f"[EXTRACTOR][DEBUG] {stage_label} {task.variable_name}: value={value}"
-                f" confidence={confidence:.2f} status={status} notes={notes}"
+                f"[EXTRACTOR][DEBUG] {stage_label} {task.variable_name}: value={str(value)[:50] if value else 'None'}... "
+                f"confidence={confidence:.2f} status={status} notes={notes[:50]}..."
             )
 
         return ExtractedVariable(
@@ -961,7 +1436,7 @@ Return JSON only, no explanation."""
             value=value,
             confidence=confidence,
             provenance=selected_provenance,
-            extraction_method=f"{stage_label}-structured",
+            extraction_method=f"{stage_label}-structured" if status != "raw_fallback" else "raw-fallback",
             raw_passages=raw_texts
         )
 
@@ -975,10 +1450,10 @@ Return JSON only, no explanation."""
                 confidence=0.0,
                 extraction_method="fallback"
             )
-        
+
         # Use the highest-scored passage as the answer
         best_passage = passages[0]
-        
+
         # Simple extraction based on task category
         if task.category == "biography":
             value = self._extract_biographical_info(best_passage.text)
@@ -988,14 +1463,14 @@ Return JSON only, no explanation."""
             # Generic extraction - use first sentence or paragraph
             sentences = best_passage.text.split('.')
             value = sentences[0].strip() if sentences else best_passage.text[:200]
-        
+
         return ExtractedVariable(
             variable_name=task.variable_name,
             value=value,
             confidence=0.6,
             provenance=[(p.metadata or {}).get('provenance', p.source_url) for p in passages],
             extraction_method="fallback",
-            raw_passages=[p.text for p in passages]
+            raw_passages=[(p.raw_text or p.text) for p in passages]
         )
     
     def _extract_biographical_info(self, text: str) -> str:

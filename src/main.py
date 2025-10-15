@@ -14,6 +14,7 @@ from actions.productivity import PRODUCTIVITY
 from actions.reasoning import REASONING
 from actions.ir_rag import IR_RAG, IRConfig
 from actions.geo_query import GEO_QUERY
+from actions.bazi_query import BAZI_QUERY
 from chasor import ChasorCore
 from toolsets import Toolset
 from config_manager import get_config
@@ -59,6 +60,7 @@ async def run_demo():
     # IR_RAG will auto-configure from YAML
     ir_rag_action = IR_RAG(llm_client=llm_client)
     geo_query_action = GEO_QUERY()  # Will read GOOGLE_MAP_KEY from env
+    bazi_query_action = BAZI_QUERY()
     
     # Create registry and register actions
     registry = ActionRegistry()
@@ -68,6 +70,7 @@ async def run_demo():
         "IR_RAG": ir_rag_action,
         "INFORMATION_RETRIEVAL": ir_rag_action,  # Map router category to action
         "GEO_QUERY": geo_query_action,
+        "BAZI_QUERY": bazi_query_action,
     }
     
     # Initialize ChasorCore with correct parameters
@@ -80,7 +83,7 @@ async def run_demo():
     
     # Demo queries - mix of different types
     queries = [
-        "郭毅可教授生日",  # Test query
+        "帮我算算2025年10月14日黄道吉日",  # Test query
     ]
     
     print("[DEMO][START] WebChasor Demo")

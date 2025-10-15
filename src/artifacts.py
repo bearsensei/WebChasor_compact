@@ -43,7 +43,8 @@ class ActionRegistry:
             "MATH_QUERY": "MATH",                  # Future: Mathematical computation
             "MULTIMODAL_QUERY": "MULTIMODAL",      # Future: Image/video processing
             "CONVERSATIONAL_FOLLOWUP": "REASONING", # Conversational followup uses REASONING with short config
-            "GEO_QUERY": "GEO_QUERY"               # Geographic/location queries
+            "GEO_QUERY": "GEO_QUERY",              # Geographic/location queries
+            "BAZI_QUERY": "BAZI_QUERY"             # Chinese fortune telling / Bazi
         }
         
         action_name = mapping.get(router_category, "REASONING")

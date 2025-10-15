@@ -90,14 +90,17 @@ class Synthesizer:
             import openai
             client = openai.OpenAI(api_key=api_key, base_url=api_base)
             
-            # Modified: Support dynamic max_tokens
-            async def real_llm(prompt, temperature=0, max_tokens=None):
+            # Modified: Support dynamic max_tokens and model override
+            async def real_llm(prompt, temperature=0, max_tokens=None, model_override=None):
                 # If max_tokens not specified, use config default
                 if max_tokens is None:
                     max_tokens = get_config().get('models.synthesizer.max_tokens', 2000)
                 
+                # Use model_override if provided, otherwise use default model
+                active_model = model_override if model_override else model
+                
                 response = client.chat.completions.create(
-                    model=model,
+                    model=active_model,
                     messages=[{"role": "user", "content": prompt}],
                     temperature=temperature,
                     max_tokens=max_tokens  # Use dynamic max_tokens
@@ -113,7 +116,7 @@ class Synthesizer:
             print(f"⚠️ Failed to initialize OpenAI client: {e}, using mock LLM")
             return self._mock_llm
     
-    async def _mock_llm(self, prompt, temperature=0, max_tokens=None):
+    async def _mock_llm(self, prompt, temperature=0, max_tokens=None, model_override=None):
         """Fallback mock LLM for testing"""
         if "summarize" in prompt.lower():
             return "• Key point 1: Main topic overview\n• Key point 2: Important details\n• Key point 3: Key conclusions"
@@ -148,6 +151,8 @@ class Synthesizer:
         # 3. Use constraints values if provided, otherwise use config values
         max_tokens = constraints.get('max_tokens', length_config.get('max_tokens', 3000))
         temperature = constraints.get('temperature', length_config.get('temperature', self.temperature))
+        model_name = constraints.get('model_name', self.model_name)  # Allow custom model override
+        provider = constraints.get('provider', None)  # Optional provider override
         
         # Override temperature for TASK_PRODUCTIVITY (deterministic)
         if category == "TASK_PRODUCTIVITY":
@@ -187,10 +192,10 @@ class Synthesizer:
             instruction_hint=instruction_hint
         )
 
-        print(f"[SYNTHESIZER][EXEC] model={self.model_name} temp={temperature} category={category} lang={auto_lang} max_tokens={max_tokens}")
+        print(f"[SYNTHESIZER][EXEC] model={model_name} temp={temperature} category={category} lang={auto_lang} max_tokens={max_tokens}")
 
-        # 7. Call LLM with dynamic max_tokens
-        response = await self.llm(prompt, temperature=temperature, max_tokens=max_tokens)
+        # 7. Call LLM with dynamic max_tokens and custom model
+        response = await self.llm(prompt, temperature=temperature, max_tokens=max_tokens, model_override=(model_name if model_name != self.model_name else None))
         return response
             
     async def synthesize(self, category, plan=None, extracted=None, user_query="", system_prompt=""):

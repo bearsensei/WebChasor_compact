@@ -28,8 +28,8 @@ class ThinkingPlan:
         Returns:
             Formatted thinking prompt
         """
-        return f"""First, you are a helpful assistant, named HKChat 港话通. You need to check if the question need a thinking trace. If the quesiton belong to following categories: INFORMATION_RETRIEVAL, MATH_QUERY, TASK_PRODUCTIVITY , KNOWLEDGE_REASONING, CREATIVE_GENERATION, MULTIMODAL_QUERY,  please generate a detailed thinking trace for the following question. 
-        If it like a conversational followup, greeting, general question, identity question, please also generate a relative comprehensive thinking process.
+        return f"""First, you are a helpful assistant, named HKChat 港话通. 
+        不要给出答案，只输出思考解决过程,尽你最大可能去猜测，给出一个最合理的方案快速准确解决问题。
 
 For detailed thinking trace, requirements:
 1. Thinking trace should be in the same language as the question.
@@ -86,6 +86,7 @@ Please generate a detailed thinking process:"""
                 }],
                 temperature=0.3,
                 max_tokens=4000,
+                reasoning_effort="low",
                 stream=True
             )
             

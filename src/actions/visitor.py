@@ -189,13 +189,14 @@ class WebVisitor:
             return self._extract_html(url, soup, response, start_time)
         
         # Remove Wikipedia-specific noise elements
+        # NOTE: Keep table.wikitable (content tables), only remove navigation/info tables
         noise_selectors = [
             'table.infobox', 'table.navbox', 'div.navbox', 'table.vertical-navbox',
             'div.toc', 'div#toc', 'div.toccolours',
             'div.reflist', 'div.refbegin', 'ol.references',
             'div.catlinks', 'div.printfooter', 'div.mw-authority-control',
             'div.mw-editsection', 'span.mw-editsection',
-            'table.wikitable', 'div.hatnote', 'div.ambox',
+            'div.hatnote', 'div.ambox',
             'div.side-box', 'div.metadata',
         ]
         
@@ -234,14 +235,20 @@ class WebVisitor:
             if heading_text:
                 headings.append(heading_text)
         
-        # Extract clean text from paragraphs and lists
+        # Extract clean text from paragraphs, lists, and tables
         content_parts = []
-        for elem in main_content.find_all(['p', 'h2', 'h3', 'ul', 'ol']):
+        for elem in main_content.find_all(['p', 'h2', 'h3', 'ul', 'ol', 'table']):
             if elem.name in ['h2', 'h3']:
                 heading_text = elem.get_text(strip=True)
                 heading_text = re.sub(r'\[编辑\]|\[編輯\]', '', heading_text).strip()
                 if heading_text:
                     content_parts.append(f"\n## {heading_text}\n")
+            elif elem.name == 'table':
+                # Extract table content (wikitable class indicates content table)
+                if 'wikitable' in elem.get('class', []):
+                    table_text = self._extract_table_text(elem)
+                    if table_text and len(table_text) > 20:
+                        content_parts.append(f"\n[TABLE]\n{table_text}\n[/TABLE]\n")
             else:
                 text = elem.get_text(separator=' ', strip=True)
                 if text and len(text) > 10:
@@ -343,6 +350,73 @@ class WebVisitor:
                 error=f"PDF extraction failed: {str(e)}",
                 fetch_time=time.time() - start_time
             )
+    
+    def _extract_table_text(self, table_elem) -> str:
+        """
+        Extract text content from a table element and format it for readability.
+        Converts HTML table to structured text format.
+        
+        Args:
+            table_elem: BeautifulSoup table element
+            
+        Returns:
+            Formatted table text
+        """
+        try:
+            rows = []
+            
+            # Extract table caption if available
+            caption = table_elem.find('caption')
+            if caption:
+                caption_text = caption.get_text(strip=True)
+                if caption_text:
+                    rows.append(f"表格标题: {caption_text}")
+                    rows.append("")
+            
+            # Extract headers
+            headers = []
+            thead = table_elem.find('thead')
+            if thead:
+                header_row = thead.find('tr')
+                if header_row:
+                    for th in header_row.find_all(['th', 'td']):
+                        headers.append(th.get_text(strip=True))
+            else:
+                # Sometimes headers are in first row of tbody
+                first_row = table_elem.find('tr')
+                if first_row:
+                    ths = first_row.find_all('th')
+                    if ths:
+                        for th in ths:
+                            headers.append(th.get_text(strip=True))
+            
+            if headers:
+                rows.append(" | ".join(headers))
+                rows.append("-" * (len(" | ".join(headers))))
+            
+            # Extract data rows
+            tbody = table_elem.find('tbody') or table_elem
+            for tr in tbody.find_all('tr'):
+                # Skip header rows in tbody
+                if tr.find('th') and not tr.find('td'):
+                    continue
+                
+                cells = []
+                for cell in tr.find_all(['td', 'th']):
+                    cell_text = cell.get_text(separator=' ', strip=True)
+                    # Remove citation markers
+                    cell_text = re.sub(r'\[\d+\]', '', cell_text)
+                    cells.append(cell_text)
+                
+                if cells and any(c.strip() for c in cells):  # Skip empty rows
+                    rows.append(" | ".join(cells))
+            
+            return "\n".join(rows)
+            
+        except Exception as e:
+            logger.warning(f"[VISITOR][TABLE] Failed to extract table: {e}")
+            # Fallback: just get all text
+            return table_elem.get_text(separator=' | ', strip=True)
     
     def _clean_content(self, content: str) -> str:
         """Clean and normalize content"""

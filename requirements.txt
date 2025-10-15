@@ -14,6 +14,9 @@ pymupdf
 # Web scraping and HTML parsing
 beautifulsoup4>=4.12.0
 
+# Translation
+deep-translator>=1.11.0
+
 # Optional dependencies for enhanced functionality
 # Uncomment as needed:
 # scikit-learn>=1.0.0  # For lightweight classifier

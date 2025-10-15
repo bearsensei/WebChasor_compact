@@ -115,6 +115,7 @@ models:
     model_name: gpt-oss-20b   # Model name for extraction
     provider: openai            # Model provider
     temperature: 0.1            # Temperature for deterministic output
+    reasoning_effort: low       # Reasoning effort level (low/medium/high)
   
   # Task planning model
   planner:
@@ -123,6 +124,7 @@ models:
     model_name: gpt-oss-20b           # Model name for planning
     provider: openai            # Model provider
     temperature: 0.5            # Low temperature for consistent planning (JSON generation)
+    reasoning_effort: low       # Reasoning effort level (low/medium/high)
   
   # Request routing model
   router:
@@ -131,6 +133,7 @@ models:
     model_name: gpt-oss-20b   # Model name for routing
     provider: openai            # Model provider
     temperature: 0.5            # Low temperature for consistent routing
+    reasoning_effort: low       # Reasoning effort level (low/medium/high)
   
   # Response synthesis model
   synthesizer:
@@ -139,6 +142,7 @@ models:
     model_name: gpt-oss-120b           # Model name for synthesis
     provider: openai            # Model provider
     temperature: 0.4             # Balanced temperature for natural, detailed responses
+    reasoning_effort: low       # Reasoning effort level (low/medium/high)
   
   # Reasoning analysis model
   reasoning:
@@ -147,6 +151,7 @@ models:
     model_name: gpt-oss-20b           # Model name for reasoning
     provider: openai            # Model provider
     temperature: 0.7            # Balanced temperature for natural, detailed reasoning
+    reasoning_effort: low       # Reasoning effort level (low/medium/high)
   
   # Productivity task model
   productivity:
@@ -155,6 +160,7 @@ models:
     model_name: gpt-oss-20b   # Model name for productivity
     provider: openai            # Model provider
     temperature: 0.0            # Deterministic output for productivity
+    reasoning_effort: low       # Reasoning effort level (low/medium/high)
   
   # Query generation model
   querymaker:
@@ -164,6 +170,7 @@ models:
     provider: openai            # Model provider
     temperature: 0.3            # Higher temperature for diverse queries
     num_queries: 5              # Number of diverse queries to generate
+    reasoning_effort: low       # Reasoning effort level (low/medium/high)
 
 # Performance and optimization settings
 performance:
@@ -360,6 +367,12 @@ geo_query:
   enable_enhancement: true  # Enable LLM-based response enhancement for friendlier output
   enhancement_temperature: 0.2  # Temperature for enhancement (higher = more creative)
 
+bazi_query:
+  enable_enhancement: true  # Enable LLM-based response enhancement for interpretations
+  enhancement_temperature: 0.5  # Temperature for enhancement (balanced for cultural content)
+  model_name: gpt-oss-20b  # Model for enhancement (cost-effective for concise responses)
+  provider: openai  # Provider for the model
+
 # Response length control by category
 response_length:
   # Information Retrieval responses
@@ -376,6 +389,10 @@ response_length:
   geo_query:
     max_tokens: 500           # Maximum tokens for geo queries (concise, friendly)
     temperature: 0.3          # Temperature for geo queries
+    
+  bazi_query:
+    max_tokens: 2000          # Maximum tokens for bazi queries (detailed interpretations)
+    temperature: 0.5          # Temperature for bazi queries (balanced)
     
   # Conversational Followup responses
   conversational_followup:

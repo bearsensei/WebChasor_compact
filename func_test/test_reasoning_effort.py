@@ -23,7 +23,7 @@ load_dotenv()
 
 # 从 config.yaml 读取配置
 import sys
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), 'src'))
 from config_manager import get_config
 cfg = get_config()
 
@@ -31,7 +31,8 @@ cfg = get_config()
 OPENAI_API_BASE = cfg.get('external_services.openai.api_base', 'https://api.openai.com/v1')
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY_AGENT")
 MODEL_NAME = cfg.get('models.planner.model_name', 'gpt-oss-120b')
-
+# MODEL_NAME = 'HKGAI-Qwen3-32b'
+# MODEL_NAME = 'web-dancer'
 # 检查环境变量
 if not OPENAI_API_KEY:
     print("[ERROR] OPENAI_API_KEY_AGENT not found in .env file")
@@ -188,7 +189,7 @@ def main():
     主测试流程
     """
     # 测试问题（从 planner.py 中的例子）
-    test_query = "分析什么时候香港经济可以好转？"
+    test_query = "解读一下：八字：己巳 甲戌 壬戌 癸卯。 不要给出答案，只输出思考解决过程,尽你最大可能去猜测，给出一个最合理的方案快速准确解决问题。"
     
     print(f"\n[TEST QUERY] {test_query}\n")
     print("=" * 80)

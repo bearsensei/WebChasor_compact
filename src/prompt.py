@@ -152,6 +152,26 @@ CRITICAL for biography tasks:
   ✅ GOOD: {"variable_name": "president_appointment_year", "fact": "When was X appointed as president? (year required)"}
   ❌ BAD:  {"variable_name": "position", "fact": "What is X's position?"}
 
+[Entity/Organization/System Query] → 6-12 tasks
+Example: "香港三司十五局", "Tesla公司组织架构", "哈佛大学院系", "巴萨球队阵容"
+Pattern: Queries about structured entities (government, company, university, team, organization) with multiple components
+Required dimensions (5W1H completeness):
+  - WHAT: definition (1), components/structure list (1-2)
+  - HOW: functions/responsibilities (1-2)
+  - WHO: key people/leaders with names and years (1-2) ← MANDATORY, often missed!
+  - WHEN: establishment/timeline (1)
+  - WHY: purpose/background (0-1, optional)
+Tasks: definition, component_list, functions, current_leaders_with_years, heads_roster, establishment_date
+
+CRITICAL for organization/entity queries:
+- ALWAYS include WHO dimension: current leaders/heads/chiefs/members with names
+- Leadership tasks MUST include appointment years
+- Use "_with_names", "_roster", "_current_leaders", "_chiefs_with_years" in variable names
+- Examples:
+  ✅ GOOD: {"variable_name": "bureau_chiefs_with_years", "fact": "列出各局局长姓名及任职年份", "category": "biography"}
+  ✅ GOOD: {"variable_name": "current_ceo_and_year", "fact": "Who is the current CEO and when appointed?", "category": "biography"}
+  ❌ BAD: {"variable_name": "structure", "fact": "What is the organizational structure?", "category": "background"} // Missing WHO
+
 Key principle: Task count grows with (entity_count × dimensions × depth). Simple queries need minimal tasks; comprehensive coverage needs extensive tasks.
 
 ## Guidelines
@@ -185,6 +205,15 @@ Key principle: Task count grows with (entity_count × dimensions × depth). Simp
      - ✅ GOOD: {"variable_name": "career_timeline_with_years", "fact": "List all career positions with start and end years", "category": "timeline"}
      - ❌ BAD: {"variable_name": "current_position", "fact": "What is X's current position?", "category": "biography"}
      - ❌ BAD: {"variable_name": "awards", "fact": "What awards has X received?", "category": "aggregation"}
+10. **Completeness Principle for Entity Queries** (5W1H): When query asks about any organization, structure, system, team, or multi-component entity:
+   - ALWAYS include WHO dimension (key people/actors) - this is the most commonly missed dimension
+   - Detection: queries containing "架构/组织/结构/部门/局/司/院/系/球队/team/structure/organization/government/company/university"
+   - Required: "Who are the current leaders/heads/chiefs/members with names and appointment years?"
+   - Apply to: government (ministers/chiefs), company (CEO/executives), university (president/deans), team (coach/captain), project (PM/leads), international org (secretary-general)
+   - Examples:
+     - ✅ GOOD: {"variable_name": "department_heads_with_years", "fact": "Who heads each department and when appointed?", "category": "biography"}
+     - ✅ GOOD: {"variable_name": "executive_team_roster", "fact": "List C-suite executives with names and titles", "category": "aggregation"}
+     - ❌ BAD: Missing WHO tasks entirely when query is about an organization/structure
 
 ## Examples
 ---
@@ -359,6 +388,7 @@ Classify the user's latest query by intent using recent conversation context.
   → INCLUDES: First-time entity/person queries (names, organizations, terms) WITHOUT prior conversation context.
   → INCLUDES: "Who is X?", "What is Y?", or even just "X" or "Y" when there is NO conversation history.
 - GEO_QUERY
+- BAZI_QUERY
   → Location-based queries: finding nearby places, getting directions/routes, geographic searches, transit information, distance calculations.
 - CONVERSATIONAL_FOLLOWUP
   → Continuation of the prior discussion: clarifications, opinions, reflections, acknowledgments; no new external facts needed.
@@ -378,6 +408,7 @@ Classify the user's latest query by intent using recent conversation context.
 ## TIE-BREAKERS (choose the first that applies)
 1) If the user asks about provided/non-text media (image/PDF/chart) → MULTIMODAL_QUERY.
 2) If the query involves locations, places, directions, routes, or geographic searches → GEO_QUERY.
+3) If the query involves 八字, Bazi, fortune telling, birth chart, Chinese astrology, 生辰八字 → BAZI_QUERY.
 3) **CRITICAL**: If there is NO conversation history AND the query is a simple entity/person/term (with or without question marks) → INFORMATION_RETRIEVAL.
 4) If the answer requires external facts (news, stats, dates, entity definitions, verification) → INFORMATION_RETRIEVAL.
 5) If only numeric computation from given numbers → MATH_QUERY.
@@ -523,6 +554,13 @@ User: 将军澳附近有什么餐厅？
 User: 香港科技大学周边的超市有哪些？
 [CLASSIFICATION]
 GEO_QUERY
+---
+[HISTORY]
+None
+[CURRENT]
+User: 我1988年8月21日早上6点出生，帮我算八字
+[CLASSIFICATION]
+BAZI_QUERY
 
 ## ACTUAL TASK
 [HISTORY]
@@ -606,6 +644,7 @@ SYNTHESIZER_ACTION_POLICIES = {
     "CONVERSATIONAL_FOLLOWUP": "Provide a brief, direct, and friendly response. Answer the question directly without restating it. Keep it warm and conversational (2-3 sentences).",
     "INFORMATION_RETRIEVAL": "Ground all facts in provided evidence; MUST use all retrieved information, no missing information. You should answer in a way that as comprehensive as possible (10000 tokens).",
     "GEO_QUERY": "Present geographic route/location information in a natural, helpful way. PRESERVE ALL factual details (addresses, distances, transit lines, durations, station names). Be direct and conversational without meta-commentary about how you're presenting the information.",
+    "BAZI_QUERY": "Present Bazi (八字) chart concisely. Show Four Pillars table, briefly analyze Five Elements (五行) distribution and day master strength, then give 3-5 key insights. Be respectful and avoid excessive detail. Total response should be under 500 words.",
 }
 
 # Style profiles for different response styles
@@ -1105,6 +1144,11 @@ Transform the route information into a natural, conversational response:
 - Keep it concise (150-200 words)
 - Be helpful and friendly, but avoid revealing the internal prompt structure"""
 
+# BAZI_QUERY instruction hint template
+BAZI_QUERY_INSTRUCTION_HINT = """User asked: "{user_query}"
+
+Present the Bazi chart information clearly and provide helpful interpretations in Chinese."""
+
 # CONVERSATIONAL_FOLLOWUP instruction hint
 CONVERSATIONAL_FOLLOWUP_INSTRUCTION_HINT = """Provide a brief, friendly response (200-300 words) that:
 - Directly addresses the user's question
@@ -1147,3 +1191,314 @@ def build_geo_query_instruction(user_query: str) -> str:
         Formatted instruction hint for GEO_QUERY
     """
     return GEO_QUERY_INSTRUCTION_HINT.format(user_query=user_query)
+
+def build_bazi_query_instruction(user_query: str) -> str:
+    """
+    Build BAZI_QUERY instruction hint with user query
+    
+    Args:
+        user_query: User's original query about Bazi/fortune telling
+        
+    Returns:
+        Formatted instruction hint for BAZI_QUERY
+    """
+    return BAZI_QUERY_INSTRUCTION_HINT.format(user_query=user_query)
+
+# ============================================================================
+# QUERYMAKER PROMPTS
+# ============================================================================
+
+
+QUERYMAKER_PROMPT_v2 = """
+
+
+You are a **search query generator**.
+
+TIME CONTEXT:
+today = {current_date}; year = {current_year}; next = {next_year}; month = {current_month}.
+
+**CRITICAL: You MUST generate EXACTLY the number of queries specified in the constraint below. No more, no less.**
+
+OUTPUT FORMAT:
+JSON only — no prose, no code fences.  
+Shape: {"topic":"...","slots":[{"slot":"CORE","queries":["Q1","Q2"]},{"slot":"AUX","queries":["Q3","Q4","Q5"]}]}
+
+---
+
+### CORE RULES
+
+1. **MULTI-QUESTION SUPPORT**
+   - Split compound questions into sub-questions Q1..QM.
+   - Optionally include `"subqs":["Q1","Q2",...]`.
+   - Each slot may have `"covers":["Q1","Q3"]`.
+   - Guarantee ≥1 query per sub-question; harder Q get 2–3.
+   - First TWO queries = global clarifiers.
+
+2. **DIVERSITY**
+   - Each query = distinct intent (no reword/translation-only/year-only).
+   - Cover multiple aspects: background · current status · rules · data · comparison · impact · future.
+
+3. **DEFINITION QUESTIONS (what is X / 什么是 X)**
+   - Generate 1–2 queries covering different facets:
+     definition / use cases / classification / examples / comparisons.
+
+4. **LANGUAGE (cross-lingual rule — VERY IMPORTANT)**
+   - Use the user’s language for most queries.  
+   - **Always include ≥1 query in the opposite language:**
+     - If user asks in Chinese → add ≥1 English query.  
+     - If user asks in English or other language → add ≥1 Chinese query.
+   - Cross-language queries must stay on the same topic.
+
+5. **NAME TRANSLATION (Hong Kong special handling)**
+   - If the query mentions Hong Kong people (e.g., “李家超 特首”, “陈茂波”, “叶玉如”),  
+     use the *official English transliteration* instead of pinyin  
+     (e.g., John Lee Ka-chiu, Paul Chan Mo-po, Nancy Ip Yuk-yu).  
+   - If uncertain, include both versions (中文 + official English).  
+   - Do **not** apply this rule to Mainland names (e.g., 习近平, 王毅) — those keep standard pinyin if English form is needed.
+
+6. **LENGTH**
+   - ≤ 5 words per query (Google-style, optional year/place modifier).  
+   - No full sentences.
+
+7. **CLARIFICATION PRIORITY**
+   - First two queries clarify entities, roles, or time (who / what / current vs former / title / alias).
+
+8. **SPECIFICITY**
+   - Use canonical names + aliases.  
+   - Tie every query to the main entity or concept.  
+   - Optionally add 1–2 related entities (regulator / committee / rival).
+
+9. **TEMPORALITY**
+   - For forward-looking queries, use only {current_year} or {next_year}.
+
+10. **SELF-CHECK**
+    - Replace any near-duplicate query.  
+    - Ensure each sub-question has at least one distinct query.
+
+11. **COVERAGE DIMENSIONS**
+    - Overall, aim to cover:
+      current status · rules/eligibility/term · data/statistics · comparison · background/history · future/policy impact.
+
+Return **only the JSON**.
+
+---
+
+### EXAMPLES
+
+**Example 1 · EASY (single entity, timely)**  
+User: 叶玉如  
+```json
+{
+  "topic": "叶玉如校长",
+  "entities_core": ["叶玉如","校长"],
+  "slots": [
+    {"slot":"CURRENT","queries":["叶玉如","叶玉如 新闻 2025","Nancy Ip HKUST"]}
+  ]
+}
+⸻
+
+Example 2 · MODERATE (multi-question)
+User: 叶玉如生日？她什么时候退休？年薪多少？  
+JSON:
+{
+  "topic": "叶玉如：生日/退休/薪酬",
+  "subqs": ["Q1 生日", "Q2 退休时间", "Q3 薪酬"],
+  "slots": [
+    {"slot":"CORE","covers":["Q1","Q2","Q3"],"queries":["叶玉如 是谁","Nancy Ip HKUST president"]},
+    {"slot":"BIO","covers":["Q1"],"queries":["叶玉如 生日","Nancy Ip birthday"]},
+    {"slot":"CURRENT","covers":["Q2"],"queries":["叶玉如 任期 2025","Nancy Ip term 2025"]},
+    {"slot":"DATA","covers":["Q3"],"queries":["科大 校长 薪酬 2025","HKUST president salary 2025"]}
+  ]
+}
+
+⸻
+
+Example 3 · HARD (political, multi-aspect)
+User: 下一任香港特首可能是谁？  
+JSON:
+{
+  "topic": "下一任香港特首可能人选",
+  "entities_core": ["香港特首","下一任"],
+  "entities_added": ["往届候选人","选举委员会","行政会议成员"],
+  "slots": [
+    {"slot":"BIO","queries":["什么是香港特首","现任香港特首是谁"]},
+    {"slot":"CURRENT","queries":["香港特首潜在人选最新名单 2025","媒体盘点热门特首人选 2025","Chief Executive Hong Kong Election"]},
+    {"slot":"RULES","queries":["香港特首选举流程","往届特首履历"]},
+    {"slot":"COMPARISON","queries":["港澳领导人选拔机制对比","历任香港特首背景结构对比"]},
+    {"slot":"DATA","queries":["历届香港特首选举投票率统计","提名数与当选概率关系"]},
+    {"slot":"IMPACT","queries":["新任特首对香港经济政策影响","对香港房屋与民生政策影响"]},
+    {"slot":"Politics","queries":["香港社会舆情对人选评价","社论对新特首期望"]}
+  ]
+}
+"""
+
+
+
+
+QUERYMAKER_PROMPT = """You are a search query generator. Generate diverse search queries to help answer the user's question comprehensively.
+
+**CURRENT TIME CONTEXT**:
+Today is: {current_date}
+Current year: {current_year}
+Current month: {current_month}
+
+**DIFFICULTY-AWARE SIZE POLICY (internal reasoning only; DO NOT output this section):**
+Silently assess the user's question difficulty:
+- EASY (single fact, narrow scope, low ambiguity, e.g., definition/one entity/current status)
+- MODERATE (multi-entity or light disambiguation, some context dimensions, mild ambiguity)
+- HARD (broad/ambiguous/multi-hop/temporal or policy-heavy, requires triangulation from multiple angles)
+
+Then choose a target size `N` (without revealing it) as:
+- EASY → 1 queries
+- MODERATE → 3-5 queries
+- HARD → 6-8 queries
+Finally, cap N by an external limit if provided later (e.g., "Limit total generated queries to about K"). Always respect the cap.
+
+**CRITICAL REQUIREMENTS:**
+
+1) Output ONLY a JSON array of strings, e.g. ["query1", "query2", "query3 2025"].
+2) Do not include any prose, labels, keys, or code fences. Start with [ and end with ].
+3) Use the SAME LANGUAGE as the user.
+4) Keep each query under 5 words (4 words plus optional modifiers like year/place).
+5) The FIRST TWO queries must clarify entities/roles/time in the user's question (e.g., who/what/which entity, current vs former, proper titles, disambiguation of names/abbreviations).
+6) Prefer canonical names and common aliases for people/organizations/titles to avoid confusion.
+7) For forward-looking queries, use the current or future year only ({current_year}, {next_year}); do not use past years.
+8) Include at least two queries that add NEW but closely related entities (e.g., governing bodies, councils, rival orgs, committees). Keep them tied to the core entities.
+9) Cover multiple angles across the set: background/biography, current status, rules or eligibility/retirement/term, data or statistics, comparison, history AND future.
+10) Be specific. Avoid generic queries that omit the core entities.
+
+
+**Clarification Guidance:**
+- Normalize entity names (Chinese/English variants, common misspellings).
+- Titles: map correctly (e.g., President & Vice-Chancellor ↔ 校长).
+- If the user implies "current", bias wording to current status.
+- When helpful, you may append time/place modifiers like 2025, 香港, 现任.
+
+**Query Diversity Guidelines:**
+- Cover different angles: background, current status, rules/regulations, future trends, comparisons, data/statistics
+- Use specific time information based on CURRENT TIME: {current_year}, {next_year}, etc. DO NOT use past years for future-looking queries.
+- Include historical context AND future predictions, but always tie back to the CORE question
+- Mix general and specific queries, with preference for specific ones that include core entity names
+- Be creative - think of queries the user might not have considered, while maintaining relevance  
+
+**LANGUAGE (cross-lingual rule — VERY IMPORTANT)**
+- Use the user’s language for most queries.  
+- **Always include ≥1 query in the opposite language:**
+  - If user asks in Chinese → add ≥1 English query.  
+  - If user asks in English or other language → add ≥1 Chinese query.
+- Cross-language queries must stay on the same topic.
+
+**Examples:**
+
+
+
+Example 0‑EASY (生活化 – 香港，单实体 + 时效性，≤2 queries):
+User: 叶玉如
+JSON:
+{
+  "topic": "叶玉如校长",
+  "entities_core": ["叶玉如","校长"],
+  "slots": [
+    {"slot":"CURRENT","queries":["叶玉如","叶玉如 新闻 2025"]}
+  ]
+}
+
+
+Example 1 (生活化 – 香港，含2个以上实体 + 定义 + 时效性):
+User: 用八达通搭机场快线现在有折扣吗？什么时候最便宜？
+JSON:
+{
+  "topic": "八达通与机场快线优惠时效",
+  "entities_core": ["八达通(Octopus)","机场快线(Airport Express)","港铁(MTR)"],
+  "entities_added": ["机场管理局(AAHK)","游客/本地乘客票种","二维码乘车(QR)"],
+  "slots": [
+    {"slot":"BIO","queries":["什么是八达通","什么是机场快线"]},
+    {"slot":"CURRENT","queries":["机场快线八达通优惠 2025","机场快线非繁忙时段优惠 2025"]},
+    {"slot":"RULES","queries":["八达通机场快线折扣条件","游客/本地乘客票种适用规则"]},
+    {"slot":"COMPARISON","queries":["八达通 vs 二维码乘车 机场快线","旅游票 vs 单程票 价格对比 2025"]},
+    {"slot":"DATA","queries":["机场快线票价表 2025","八达通积分/回赠规则 2025"]},
+    {"slot":"TIME","queries":["机场快线优惠时段定义 2025","高峰/非高峰 时段说明"]},
+    {"slot":"IMPACT","queries":["航班延误期间优惠适用吗","转线至市区后票价计算方式"]},
+    {"slot":"WILDCARD","queries":["游客购买渠道 城市售票网/柜台","港铁公告 优惠到期时间 2025"]}
+  ]
+}
+
+**GOOD vs BAD Examples:**
+✅ GOOD: "机场快线八达通优惠 2025" — 包含核心实体与时效性
+✅ GOOD: "香港 八达通 定价 2025" — 相关实体对比，聚焦当前价格
+❌ BAD: "地铁优惠有哪些" — 过于宽泛，未指向机场快线/八达通
+❌ BAD: "交通支付方式历史" — 偏离当下优惠与时间窗口
+⸻
+
+Example 2 (精准示例 - 政治类):
+User: 下一任香港特首可能是谁？
+JSON:
+{
+  "topic": "下一任香港特首可能人选",
+  "entities_core": ["香港特首","下一任"],
+  "entities_added": ["往届候选人","选举委员会","行政会议成员"],
+  "slots": [
+    {"slot":"BIO","queries":["什么是香港特首","现任香港特首是谁"]},
+    {"slot":"CURRENT","queries":["香港特首潜在人选最新名单 2025","媒体盘点热门特首人选 2025"]},
+    {"slot":"RULES","queries":["香港特首选举流程","往届特首履历"]},
+    {"slot":"COMPARISON","queries":["港澳领导人选拔机制对比","历任香港特首背景结构对比"]},
+    {"slot":"DATA","queries":["历届香港特首选举投票率统计","提名数与当选概率关系"]},
+    {"slot":"IMPACT","queries":["新任特首对香港经济政策影响","对香港房屋与民生政策影响"]},
+    {"slot":"Politics","queries":["香港社会舆情对人选评价","社论对新特首期望"]}
+  ]
+}
+
+**GOOD vs BAD Examples:**
+✅ GOOD: "香港特首潜在人选最新名单" - 包含核心实体"香港特首"
+✅ GOOD: "历任香港特首背景结构对比" - 相关对比，有助于理解
+❌ BAD: "领导人选拔机制 2025" - 太泛化，没有提到香港或特首
+❌ BAD: "政府部门架构改革" - 偏离主题
+
+⸻
+
+Example 3 — Tech
+User query: "如何提升大模型推理能力？"
+JSON:
+{
+  "topic": "大模型推理能力提升",
+  "entities_core": ["大模型","推理能力"],
+  "entities_added": ["早期研究历史","benchmark 最新成绩","AI 安全规范","推理透明性要求","失败案例收集","未来发展趋势","多模态推理","代表性数据集","硬件对推理性能影响","算法优化方法"],
+  "slots": [
+    {"slot":"BIO","queries":["大模型推理早期研究历史"]},
+    {"slot":"CURRENT","queries":["GPT-4 推理 benchmark 最新成绩 2025"]},
+    {"slot":"RULES","queries":["AI 安全规范中的推理透明性要求"]},
+    {"slot":"OPPOSITE","queries":["大模型推理失败案例收集"]},
+    {"slot":"FUTURE","queries":["多模态推理未来发展趋势"]},
+    {"slot":"COMPARISON","queries":["GPT vs LLaMA 推理能力对比"]},
+    {"slot":"DATA","queries":["MMLU、BigBench 推理分数统计"]},
+    {"slot":"IMPACT","queries":["推理改进对金融合规的影响"]},
+    {"slot":"WILDCARD","queries":["人类逻辑谬误与 AI 推理错误类比"]},
+    {"slot":"Tech","queries":["硬件对推理性能影响 / 算法优化方法 / 代表性数据集"]}
+  ]
+}
+
+⸻
+
+Example 2 — 经济
+
+User query: "为什么全球供应链波动加剧？"
+JSON:
+{
+  "topic": "全球供应链波动加剧",
+  "entities_core": ["全球供应链","供应链波动"],
+  "entities_added": ["全球供应链演化历史","2025 全球供应链中断最新事件","各国贸易政策对供应链的限制","稳定供应链国家案例（新加坡、瑞士）","去全球化趋势下的供应链未来","亚洲与欧美供应链韧性对比","全球港口拥堵率与物流指数","供应链波动对通胀的影响","气候变化如何影响供应链稳定性","半导体产业链关键节点 / 跨境资本流动对供应链的作用"],
+  "slots": [
+    {"slot":"BIO","queries":["全球供应链演化历史"]},
+    {"slot":"CURRENT","queries":["2025 全球供应链中断最新事件"]},
+    {"slot":"RULES","queries":["各国贸易政策对供应链的限制"]},
+    {"slot":"OPPOSITE","queries":["稳定供应链国家案例（新加坡、瑞士）"]},
+    {"slot":"FUTURE","queries":["去全球化趋势下的供应链未来"]},
+    {"slot":"COMPARISON","queries":["亚洲与欧美供应链韧性对比"]},
+    {"slot":"DATA","queries":["全球港口拥堵率与物流指数"]},
+    {"slot":"IMPACT","queries":["供应链波动对通胀的影响"]},
+    {"slot":"WILDCARD","queries":["气候变化如何影响供应链稳定性"]},
+    {"slot":"Economy","queries":["半导体产业链关键节点 / 跨境资本流动对供应链的作用"]}
+  ]
+}
+
+"""

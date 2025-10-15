@@ -9,17 +9,24 @@ import asyncio
 from pathlib import Path
 
 # Add src to path
-sys.path.insert(0, str(Path(__file__).parent / "src"))
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 # Load environment
 try:
     from dotenv import load_dotenv
-    env_path = Path(__file__).parent / '.env'
+    # Try project root first (parent of func_test/)
+    env_path = Path(__file__).parent.parent / '.env'
     if env_path.exists():
         load_dotenv(env_path)
         print(f"[TEST][QueryMaker] Loaded environment from {env_path}\n")
     else:
-        print(f"[TEST][QueryMaker] .env file not found at {env_path}\n")
+        # Fallback to func_test/.env
+        env_path = Path(__file__).parent / '.env'
+        if env_path.exists():
+            load_dotenv(env_path)
+            print(f"[TEST][QueryMaker] Loaded environment from {env_path}\n")
+        else:
+            print(f"[TEST][QueryMaker] .env file not found at project root or func_test/\n")
 except ImportError:
     print("[TEST][QueryMaker] python-dotenv not installed, skipping .env file loading\n")
 
@@ -34,23 +41,18 @@ from utils.timectx import TimeContext
 # Test queries covering different types
 TEST_QUERIES = [
     # 1. Simple queries (lazy mode - just a name or noun)
-    "郭毅可",           # Just a person name
-    "稳定币",           # Just a term
+    "李家超",           # Just a person name
+    "Chris Tang",           # Just a term
     "NVDA",            # Stock ticker
     "浸会大学",         # Institution name
     
     # 2. Definition queries (explicit questions)
     "什么是稳定币？",
     "What is a stablecoin?",
-    
-    # 3. Complex factual query (needs diverse queries)
-    "比较香港和新加坡加密货币的优势和劣势",
-    
-    # 4. Data/comparison query (needs multiple angles)
-    "香港各大学校长年薪对比",
-    
-    # 5. How-to query
-    "如何提升大模型推理能力？",
+
+    # 3. Multi-question queries
+    "李家超生日？他什么时候退休？他年薪多少？",
+
 ]
 
 # ============================================================================

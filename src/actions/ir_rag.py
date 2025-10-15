@@ -579,6 +579,10 @@ class IR_RAG(Action):
             
             if selected_urls:
                 print(f"[SELECTOR][LLM] Successfully selected {len(selected_urls)} valid URLs")
+                
+                # 🌟 WIKI PRIORITY: Ensure at least one Wikipedia page if available
+                selected_urls = self._ensure_wikipedia_in_urls(selected_urls, search_results, max_targets)
+                
                 return selected_urls
             else:
                 print(f"[SELECTOR][LLM] No valid URLs selected, falling back to simple strategy")
@@ -595,6 +599,52 @@ class IR_RAG(Action):
                 print(f"🌐 SELECTOR: [FALLBACK] {r.url}")
                 if len(selected_urls) >= max_targets:
                     break
+        
+        # 🌟 WIKI PRIORITY: Ensure at least one Wikipedia page if available
+        selected_urls = self._ensure_wikipedia_in_urls(selected_urls, search_results, max_targets)
+        
+        return selected_urls
+    
+    def _ensure_wikipedia_in_urls(self, selected_urls: List[str], search_results: List[SearchResult], max_targets: int) -> List[str]:
+        """
+        Ensure at least one Wikipedia page is included in the selected URLs if available.
+        
+        Args:
+            selected_urls: URLs selected by LLM or fallback
+            search_results: All search results
+            max_targets: Maximum number of URLs to fetch
+            
+        Returns:
+            Updated list of URLs with at least one Wikipedia page if available
+        """
+        # Check if we already have a Wikipedia URL
+        has_wiki = any('wikipedia.org' in url.lower() for url in selected_urls)
+        
+        if has_wiki:
+            print(f"[WIKI_PRIORITY] ✅ Wikipedia page already included")
+            return selected_urls
+        
+        # Find first Wikipedia page in search results
+        wiki_url = None
+        for result in search_results:
+            if result.url and 'wikipedia.org' in result.url.lower():
+                wiki_url = result.url
+                print(f"[WIKI_PRIORITY] 📚 Found Wikipedia page: {wiki_url}")
+                break
+        
+        if not wiki_url:
+            print(f"[WIKI_PRIORITY] ⚠️ No Wikipedia page found in search results")
+            return selected_urls
+        
+        # Add Wikipedia URL
+        # If we haven't reached max_targets, just append
+        if len(selected_urls) < max_targets:
+            selected_urls.append(wiki_url)
+            print(f"[WIKI_PRIORITY] ✅ Added Wikipedia page (total: {len(selected_urls)})")
+        else:
+            # Replace the last URL with Wikipedia
+            selected_urls[-1] = wiki_url
+            print(f"[WIKI_PRIORITY] ✅ Replaced last URL with Wikipedia page")
         
         return selected_urls
     

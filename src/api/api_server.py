@@ -34,6 +34,7 @@ from actions.productivity import PRODUCTIVITY
 from actions.reasoning import REASONING
 from actions.ir_rag import IR_RAG
 from actions.geo_query import GEO_QUERY
+from actions.bazi_query import BAZI_QUERY
 from toolsets import Toolset
 from config_manager import get_config, get_global_gate, get_llm_gate
 # 按你现有目录结构保留 import；此处未直接调用，但保留兼容性
@@ -98,6 +99,7 @@ class WebChasorService:
             print("[SERVICE] No API credentials, using fallback")
         ir_rag_action = IR_RAG(llm_client=llm_client)
         geo_query_action = GEO_QUERY()  # Will read GOOGLE_MAP_KEY from env
+        bazi_query_action = BAZI_QUERY()
         # Create registry and register actions
         self.registry = ActionRegistry()
         self.registry._reg = {
@@ -106,6 +108,7 @@ class WebChasorService:
             "IR_RAG": ir_rag_action,
             "INFORMATION_RETRIEVAL": ir_rag_action,
             "GEO_QUERY": geo_query_action,
+            "BAZI_QUERY": bazi_query_action,
         }
         self.initialized = True
         print("[SERVICE] WebChasor service initialized successfully")
